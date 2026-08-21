@@ -1,0 +1,95 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '22'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Run tests
+      run: npm test
+
+    - name: Build
+      run: npm run build
+
+    - name: Create artifact
+      run: |
+        mkdir -p dist
+        zip -r dist/hello-world.zip . -x "node_modules/*" ".git/*" ".github/*" "dist/*"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: hello-world-app
+        path: dist/hello-world.zip
+
+  build-docker:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build Docker image
+      run: docker build -t hello-world:latest .
+
+    - name: Save Docker image
+      run: docker save hello-world:latest -o hello-world-docker.tar
+
+    - name: Upload Docker image artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: hello-world-docker
+        path: hello-world-docker.tar
+
+  deploy-kubernetes:
+    needs: build-docker
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Start Minikube
+      uses: medyagh/setup-minikube@master
+
+    - name: Download Docker image artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: hello-world-docker
+
+    - name: Load Docker image into Minikube
+      run: |
+        eval $(minikube docker-env)
+        docker load -i hello-world-docker.tar
+
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl apply -f deployment.yaml
+        kubectl apply -f service.yaml
+
+    - name: Wait for deployment
+      run: kubectl rollout status deployment/hello-world -n default
+
+    - name: Check pods
+      run: kubectl get pods -o wide
+
+    - name: Get service info
+      run: kubectl get service hello-world

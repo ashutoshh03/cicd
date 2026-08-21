@@ -1,0 +1,21 @@
+{
+  "name": "hello-world",
+  "version": "1.0.0",
+  "description": "Simple Hello World Node.js application for CI/CD demo",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "build": "echo 'Build complete'",
+    "test": "jest --forceExit"
+  },
+  "keywords": ["hello-world", "cicd", "kubernetes"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3"
+  }
+}
