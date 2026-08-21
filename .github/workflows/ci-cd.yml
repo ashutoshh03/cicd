@@ -14,7 +14,7 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Set up Node.js
-      uses: actions/setup-node@v2
+      uses: actions/setup-node@v7
       with:
         node-version: '22'
 
@@ -33,7 +33,7 @@ jobs:
         zip -r dist/hello-world.zip . -x "node_modules/*" ".git/*" ".github/*" "dist/*"
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v7
       with:
         name: hello-world-app
         path: dist/hello-world.zip
@@ -46,7 +46,7 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v7
 
     - name: Build Docker image
       run: docker build -t hello-world:latest .
@@ -55,7 +55,7 @@ jobs:
       run: docker save hello-world:latest -o hello-world-docker.tar
 
     - name: Upload Docker image artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v7
       with:
         name: hello-world-docker
         path: hello-world-docker.tar
@@ -71,7 +71,7 @@ jobs:
       uses: medyagh/setup-minikube@master
 
     - name: Download Docker image artifact
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v7
       with:
         name: hello-world-docker
 
