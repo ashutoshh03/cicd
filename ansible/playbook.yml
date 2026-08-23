@@ -1,0 +1,27 @@
+---
+- name: Deploy Node.js application to Windows VM
+  hosts: windows_vm
+  gather_facts: false
+
+  tasks:
+
+    - name: Create application directory
+      ansible.windows.win_file:
+        path: C:\apps\hello-world
+        state: directory
+
+    - name: Copy application files
+      ansible.windows.win_copy:
+        src: ../
+        dest: C:\apps\hello-world
+
+    - name: Install npm dependencies
+      ansible.windows.win_command:
+        cmd: npm ci
+        chdir: C:\apps\hello-world
+
+    - name: Start application
+      ansible.windows.win_shell: |
+        Start-Process "node" `
+          -ArgumentList "app.js" `
+          -WorkingDirectory "C:\apps\hello-world"
