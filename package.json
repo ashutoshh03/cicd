@@ -4,11 +4,14 @@
   "description": "Simple Hello World Node.js application for CI/CD demo",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
-    "build": "echo 'Build complete'",
-    "test": "jest --forceExit"
-  },
-  "keywords": ["hello-world", "cicd", "kubernetes"],
+  "test": "jest",
+  "build": "echo \"Build completed successfully\""
+},
+  "keywords": [
+    "hello-world",
+    "cicd",
+    "kubernetes"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
