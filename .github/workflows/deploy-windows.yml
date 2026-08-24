@@ -27,267 +27,69 @@ jobs:
 
 
       # ========================================
-      # Verify Node.js
+      # Verify Ansible
       # ========================================
 
-      - name: Verify Node.js and npm
+      - name: Verify Ansible
         shell: powershell
         run: |
-          Write-Host "Node version:"
-          node --version
-
-          Write-Host "npm version:"
-          npm --version
+          ansible-playbook --version
 
 
       # ========================================
-      # Stop existing application on port 3000
+      # Install Ansible collections
       # ========================================
 
-      - name: Free port 3000
+      - name: Install Ansible collections
         shell: powershell
         run: |
-          Write-Host "Checking port 3000..."
+          ansible-galaxy collection install ansible.windows
+          ansible-galaxy collection install community.windows
 
-          $connections = Get-NetTCPConnection `
-            -LocalPort 3000 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
 
-          if ($connections) {
+      # ========================================
+      # Verify deployment files
+      # ========================================
 
-              $pids = $connections |
-                Select-Object -ExpandProperty OwningProcess -Unique
-
-              foreach ($pid in $pids) {
-                  Write-Host "Stopping process $pid using port 3000..."
-
-                  Stop-Process `
-                    -Id $pid `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-              }
-
-              Start-Sleep -Seconds 2
-
-          } else {
-              Write-Host "Port 3000 is already free."
+      - name: Verify Ansible files
+        shell: powershell
+        run: |
+          if (-not (Test-Path "ansible\inventory.yml")) {
+            throw "ansible\inventory.yml not found"
           }
 
-          Write-Host "Port 3000 status after cleanup:"
-
-          Get-NetTCPConnection `
-            -LocalPort 3000 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-
-      # ========================================
-      # Clean old dependencies
-      # ========================================
-
-      - name: Clean node_modules
-        shell: powershell
-        run: |
-          if (Test-Path "node_modules") {
-              Write-Host "Removing old node_modules..."
-
-              Remove-Item `
-                -Path "node_modules" `
-                -Recurse `
-                -Force `
-                -ErrorAction SilentlyContinue
+          if (-not (Test-Path "ansible\deploy.yml")) {
+            throw "ansible\deploy.yml not found"
           }
 
-          Write-Host "node_modules cleanup completed."
-
-
-      # ========================================
-      # Install dependencies
-      # ========================================
-
-      - name: Install dependencies
-        shell: powershell
-        run: |
-          npm ci
-
-
-      # ========================================
-      # Build application
-      # ========================================
-
-      - name: Build application
-        shell: powershell
-        run: |
-          npm run build
-
-
-      # ========================================
-      # Start application in background
-      # ========================================
-
-      - name: Start application
-        shell: powershell
-        run: |
-
-          if (Test-Path "app.log") {
-              Remove-Item "app.log" -Force
+          if (-not (Test-Path "app.js")) {
+            throw "app.js not found"
           }
 
-          Write-Host "Starting Node.js application..."
-
-          $env:PORT = "3000"
-
-          Start-Process `
-            -FilePath "cmd.exe" `
-            -ArgumentList "/c npm start > app.log 2>&1" `
-            -WorkingDirectory "$PWD" `
-            -WindowStyle Hidden
-
-          Write-Host "Application process started."
-
-          Start-Sleep -Seconds 5
-
-          Write-Host ""
-          Write-Host "===== Application Log ====="
-
-          if (Test-Path "app.log") {
-              Get-Content "app.log"
+          if (-not (Test-Path "package.json")) {
+            throw "package.json not found"
           }
 
 
       # ========================================
-      # Verify port 3000
+      # Run Ansible deployment
       # ========================================
 
-      - name: Verify application port
+      - name: Deploy using Ansible
         shell: powershell
+        env:
+          WINDOWS_VM_HOST: ${{ secrets.WINDOWS_VM_HOST }}
+          WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
+          WINRM_CERT_FILE: ${{ secrets.WINRM_CERT_FILE }}
+          WINRM_KEY_FILE: ${{ secrets.WINRM_KEY_FILE }}
         run: |
-
-          Write-Host "Checking whether port 3000 is listening..."
-
-          $listening = $false
-
-          for ($i = 1; $i -le 10; $i++) {
-
-              $connection = Get-NetTCPConnection `
-                -LocalPort 3000 `
-                -State Listen `
-                -ErrorAction SilentlyContinue
-
-              if ($connection) {
-                  Write-Host "Port 3000 is listening."
-                  $listening = $true
-                  break
-              }
-
-              Write-Host "Port 3000 not ready. Attempt $i/10"
-
-              Start-Sleep -Seconds 2
-          }
-
-          if (-not $listening) {
-
-              Write-Host ""
-              Write-Host "===== Application Log ====="
-
-              if (Test-Path "app.log") {
-                  Get-Content "app.log"
-              }
-
-              throw "Application did not start on port 3000."
-          }
+          ansible-playbook `
+            -i ansible\inventory.yml `
+            ansible\deploy.yml
 
 
       # ========================================
-      # Health Check
-      # ========================================
-
-      - name: Wait for application health
-        shell: powershell
-        run: |
-
-          $healthUrl = "http://localhost:3000/health"
-          $maxRetries = 20
-          $retryDelay = 3
-
-          Write-Host "Waiting for application to become healthy..."
-          Write-Host "Health URL: $healthUrl"
-
-          $healthy = $false
-
-          for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-
-              try {
-
-                  $response = Invoke-WebRequest `
-                    -Uri $healthUrl `
-                    -UseBasicParsing `
-                    -TimeoutSec 5 `
-                    -ErrorAction Stop
-
-                  Write-Host "Attempt $attempt/$maxRetries succeeded."
-                  Write-Host "HTTP Status: $($response.StatusCode)"
-                  Write-Host "Response: $($response.Content)"
-
-                  if ($response.StatusCode -eq 200) {
-                      $healthy = $true
-                      break
-                  }
-
-              }
-              catch {
-
-                  Write-Host "Attempt $attempt/$maxRetries failed."
-                  Write-Host $_.Exception.Message
-              }
-
-              Start-Sleep -Seconds $retryDelay
-          }
-
-          if (-not $healthy) {
-
-              Write-Host ""
-              Write-Host "========================================"
-              Write-Host "APPLICATION HEALTH CHECK FAILED"
-              Write-Host "========================================"
-
-              Write-Host ""
-              Write-Host "===== Port 3000 ====="
-
-              Get-NetTCPConnection `
-                -LocalPort 3000 `
-                -ErrorAction SilentlyContinue |
-                Format-Table -AutoSize
-
-              Write-Host ""
-              Write-Host "===== Node Processes ====="
-
-              Get-Process node `
-                -ErrorAction SilentlyContinue |
-                Select-Object Id, ProcessName, Path
-
-              Write-Host ""
-              Write-Host "===== Application Log ====="
-
-              if (Test-Path "app.log") {
-                  Get-Content "app.log"
-              }
-              else {
-                  Write-Host "app.log was not found."
-              }
-
-              throw "Application failed health check: $healthUrl"
-          }
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "APPLICATION IS HEALTHY"
-          Write-Host "========================================"
-
-
-      # ========================================
-      # Deployment Summary
+      # Deployment successful
       # ========================================
 
       - name: Deployment successful
@@ -295,7 +97,5 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "DEPLOYMENT SUCCESSFUL"
+          Write-Host "ANSIBLE DEPLOYMENT SUCCESSFUL"
           Write-Host "========================================"
-          Write-Host "Application: http://localhost:3000"
-          Write-Host "Health:      http://localhost:3000/health"
