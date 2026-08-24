@@ -17,7 +17,7 @@ on:
     branches:
       - main
       - master
-      - test
+    #   - test
 
   workflow_run:
     workflows:

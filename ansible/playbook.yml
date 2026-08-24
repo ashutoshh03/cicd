@@ -2,6 +2,7 @@
 - name: Deploy Node.js Application to Windows VM
   hosts: windows_vm
   gather_facts: yes
+
   vars:
     app_name: hello-world
     app_port: 3000
@@ -11,7 +12,10 @@
 
   tasks:
 
+    # ========================================
     # Verify prerequisites
+    # ========================================
+
     - name: Check if Node.js is installed
       ansible.windows.win_command:
         cmd: node --version
@@ -20,196 +24,237 @@
       changed_when: false
 
     - name: Fail if Node.js is not installed
-      fail:
-        msg: "Node.js is required but not installed on the Windows VM"
+      ansible.builtin.fail:
+        msg: "Node.js is required but not installed on the Windows VM."
       when: node_check.rc != 0
 
     - name: Display Node.js version
-      debug:
-        msg: "Node.js version: {{ node_check.stdout }}"
+      ansible.builtin.debug:
+        msg: "Node.js version: {{ node_check.stdout | trim }}"
 
+
+    # ========================================
     # Create application directory
+    # ========================================
+
     - name: Create application directory
       ansible.windows.win_file:
         path: "{{ app_directory }}"
         state: directory
 
-    - name: Check if directory was created successfully
-      ansible.windows.win_file:
-        path: "{{ app_directory }}"
-        state: directory
-      register: dir_result
 
-    - name: Verify directory exists
-      ansible.windows.win_shell: |
-        if (Test-Path "{{ app_directory }}") {
-          Write-Host "Directory verified: {{ app_directory }}"
-          exit 0
-        } else {
-          Write-Host "Directory does not exist"
-          exit 1
-        }
-      register: dir_verify
-      changed_when: false
-
+    # ========================================
     # Copy application files
-    - name: Copy application files to Windows VM
+    # ========================================
+
+    - name: Copy package.json
       ansible.windows.win_copy:
-        src: "../"
-        dest: "{{ app_directory }}"
-        force: yes
+        src: "../package.json"
+        dest: "{{ app_directory }}\package.json"
 
-    - name: Verify files were copied
-      ansible.windows.win_command:
-        cmd: 'dir {{ app_directory }}'
-      register: dir_listing
+    - name: Copy package-lock.json
+      ansible.windows.win_copy:
+        src: "../package-lock.json"
+        dest: "{{ app_directory }}\package-lock.json"
 
-    - name: Display copied files
-      debug:
-        msg: "{{ dir_listing.stdout }}"
+    - name: Copy application source
+      ansible.windows.win_copy:
+        src: "../app.js"
+        dest: "{{ app_directory }}\app.js"
 
-    # Install dependencies
-    - name: Check if package.json exists
+    # If your project has a build directory, copy it as well.
+    # Uncomment and modify if needed:
+    #
+    # - name: Copy dist directory
+    #   ansible.windows.win_copy:
+    #     src: "../dist/"
+    #     dest: "{{ app_directory }}\dist\"
+
+    - name: Verify package.json exists
       ansible.windows.win_stat:
-        path: "{{ app_directory }}\\package.json"
+        path: "{{ app_directory }}\package.json"
       register: package_json_check
 
     - name: Fail if package.json is missing
-      fail:
+      ansible.builtin.fail:
         msg: "package.json not found in {{ app_directory }}"
       when: not package_json_check.stat.exists
 
-    - name: Install npm dependencies (npm ci)
+
+    # ========================================
+    # Install dependencies
+    # ========================================
+
+    - name: Install npm dependencies
       ansible.windows.win_command:
         cmd: npm ci
         chdir: "{{ app_directory }}"
       register: npm_install
-      retries: 3
-      delay: 5
 
     - name: Display npm installation output
-      debug:
+      ansible.builtin.debug:
         msg: "{{ npm_install.stdout }}"
 
-    # Stop any existing processes
-    - name: Check if application is already running
+
+    # ========================================
+    # Stop existing application
+    # ========================================
+
+    - name: Check if Node.js application is running
       ansible.windows.win_shell: |
         $process = Get-Process node -ErrorAction SilentlyContinue
+
         if ($process) {
-          Write-Host "Found running node processes"
+          Write-Output "Node.js process found"
           exit 0
-        } else {
-          Write-Host "No running node processes found"
-          exit 1
         }
+
+        Write-Output "No Node.js process found"
+        exit 1
       register: existing_process_check
       failed_when: false
       changed_when: false
 
-    - name: Stop existing application
+    - name: Stop existing Node.js application
       ansible.windows.win_shell: |
-        Stop-Process -Name node -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        Write-Host "Stopped any existing node processes"
-      when: existing_process_check.rc == 0
-      changed_when: true
+        Get-Process node -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
 
-    # Start the application
+        Start-Sleep -Seconds 2
+
+        Write-Output "Existing Node.js processes stopped."
+      when: existing_process_check.rc == 0
+
+
+    # ========================================
+    # Start application
+    # ========================================
+
     - name: Start Node.js application
       ansible.windows.win_shell: |
-        $startupScript = @"
-        `$logPath = '{{ app_directory }}\app.log'
-        `$process = Start-Process -FilePath 'node' `
-                                  -ArgumentList 'app.js' `
-                                  -WorkingDirectory '{{ app_directory }}' `
-                                  -RedirectStandardOutput `$logPath `
-                                  -RedirectStandardError `$logPath `
-                                  -WindowStyle Hidden `
-                                  -PassThru
-        
-        "`$(`$process.Id)" | Out-File -FilePath '{{ app_directory }}\app.pid' -Encoding UTF8
-        Write-Host "Application started with PID: `$(`$process.Id)"
-        "@
-        
-        Invoke-Expression $startupScript
-      register: start_application
-      changed_when: true
+        $logPath = "{{ app_directory }}\app.log"
+        $errorLogPath = "{{ app_directory }}\app-error.log"
+        $pidPath = "{{ app_directory }}\app.pid"
 
-    - name: Wait for application to start
+        $process = Start-Process `
+          -FilePath "node" `
+          -ArgumentList "app.js" `
+          -WorkingDirectory "{{ app_directory }}" `
+          -RedirectStandardOutput $logPath `
+          -RedirectStandardError $errorLogPath `
+          -WindowStyle Hidden `
+          -PassThru
+
+        $process.Id | Out-File `
+          -FilePath $pidPath `
+          -Encoding ascii
+
+        Write-Output "Application started with PID: $($process.Id)"
+      register: start_application
+
+    - name: Display application startup result
+      ansible.builtin.debug:
+        msg: "{{ start_application.stdout }}"
+
+
+    # ========================================
+    # Health check
+    # ========================================
+
+    - name: Wait for application to become healthy
       ansible.windows.win_shell: |
         $maxRetries = {{ node_check_retries }}
         $retryDelay = {{ node_check_delay }}
-        
-        for ($i = 0; $i -lt $maxRetries; $i++) {
+
+        for ($i = 1; $i -le $maxRetries; $i++) {
+
           try {
-            $response = Invoke-WebRequest -Uri "http://localhost:{{ app_port }}/health" -UseBasicParsing -ErrorAction Stop
+            $response = Invoke-WebRequest `
+              -Uri "http://localhost:{{ app_port }}/health" `
+              -UseBasicParsing `
+              -TimeoutSec 5 `
+              -ErrorAction Stop
+
             if ($response.StatusCode -eq 200) {
-              Write-Host "Application is running and healthy"
+              Write-Output "Application is healthy."
+              Write-Output "Response: $($response.Content)"
               exit 0
             }
-          } catch {
-            Write-Host "Attempt $($i + 1)/$maxRetries: Application not yet responding..."
+          }
+          catch {
+            Write-Output "Attempt $i/$maxRetries failed."
+          }
+
+          if ($i -lt $maxRetries) {
             Start-Sleep -Seconds $retryDelay
           }
         }
-        
-        Write-Host "Application started (unable to verify health immediately, manual check recommended)"
-        exit 0
+
+        Write-Output "Application did not become healthy."
+        exit 1
+
       register: health_check
       changed_when: false
 
-    # Verify deployment
-    - name: Verify application process
+    - name: Display health check result
+      ansible.builtin.debug:
+        msg: "{{ health_check.stdout }}"
+
+
+    # ========================================
+    # Verify application process
+    # ========================================
+
+    - name: Verify Node.js process
       ansible.windows.win_shell: |
         $processes = Get-Process node -ErrorAction SilentlyContinue
-        if ($processes) {
-          Write-Host "Application is running"
-          Write-Host "Process Count: $(($processes | Measure-Object).Count)"
-          $processes | ForEach-Object { Write-Host "PID: $($_.Id), Name: $($_.ProcessName)" }
-          exit 0
-        } else {
-          Write-Host "WARNING: No node process found"
+
+        if (-not $processes) {
+          Write-Output "No Node.js process found."
           exit 1
         }
+
+        Write-Output "Node.js application is running."
+
+        $processes | ForEach-Object {
+          Write-Output "PID: $($_.Id)"
+        }
+
       register: process_verify
-      failed_when: false
       changed_when: false
 
     - name: Display deployment status
-      debug:
+      ansible.builtin.debug:
         msg: "{{ process_verify.stdout }}"
 
+
+    # ========================================
+    # Deployment summary
+    # ========================================
+
     - name: Deployment Summary
-      debug:
+      ansible.builtin.debug:
         msg: |
           ========================================
-          Application Deployment Complete
+          WINDOWS VM DEPLOYMENT COMPLETE
           ========================================
-          
+
           Application: {{ app_name }}
           Directory: {{ app_directory }}
           Port: {{ app_port }}
-          
-          Deployment Date: {{ ansible_date_time.iso8601 }}
-          
-          Next Steps:
-          1. Access application at: http://{{ inventory_hostname }}:{{ app_port }}/
-          2. Check health endpoint: http://{{ inventory_hostname }}:{{ app_port }}/health
-          3. View logs: type {{ app_directory }}\app.log
 
-  handlers:
-    - name: Restart application
-      ansible.windows.win_shell: |
-        Stop-Process -Name node -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        
-        $startupScript = @"
-        `$process = Start-Process -FilePath 'node' `
-                                  -ArgumentList 'app.js' `
-                                  -WorkingDirectory '{{ app_directory }}' `
-                                  -WindowStyle Hidden `
-                                  -PassThru
-        Write-Host "Application restarted with PID: `$(`$process.Id)"
-        "@
-        
-        Invoke-Expression $startupScript
+          Deployment Date: {{ ansible_date_time.iso8601 }}
+
+          Application URL:
+          http://{{ ansible_host }}:{{ app_port }}/
+
+          Health URL:
+          http://{{ ansible_host }}:{{ app_port }}/health
+
+          Log file:
+          {{ app_directory }}\app.log
+
+          Error log:
+          {{ app_directory }}\app-error.log
+
+          ========================================
