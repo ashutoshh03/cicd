@@ -16,9 +16,6 @@ jobs:
   deploy-windows:
     runs-on: self-hosted
 
-    env:
-      PORT: 3000
-
     steps:
 
       # ========================================
@@ -33,180 +30,193 @@ jobs:
       # Verify Node.js
       # ========================================
 
-      - name: Check Node.js
+      - name: Verify Node.js and npm
         shell: powershell
         run: |
-          $node = node --version
+          Write-Host "Node version:"
+          node --version
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Node.js is not installed on this Windows runner."
-              exit 1
-          }
-
-          Write-Host "Node.js version: $node"
-          Write-Host "PORT: $env:PORT"
+          Write-Host "npm version:"
+          npm --version
 
 
       # ========================================
-      # Create application directory
+      # Stop existing application on port 3000
       # ========================================
 
-      - name: Create application directory
+      - name: Free port 3000
         shell: powershell
         run: |
-          $appDirectory = "C:\apps\hello-world"
+          Write-Host "Checking port 3000..."
 
-          if (!(Test-Path $appDirectory)) {
-              New-Item -ItemType Directory -Path $appDirectory -Force | Out-Null
+          $connections = Get-NetTCPConnection `
+            -LocalPort 3000 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if ($connections) {
+
+              $pids = $connections |
+                Select-Object -ExpandProperty OwningProcess -Unique
+
+              foreach ($pid in $pids) {
+                  Write-Host "Stopping process $pid using port 3000..."
+
+                  Stop-Process `
+                    -Id $pid `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+              }
+
+              Start-Sleep -Seconds 2
+
+          } else {
+              Write-Host "Port 3000 is already free."
           }
 
-          Write-Host "Application directory: $appDirectory"
+          Write-Host "Port 3000 status after cleanup:"
+
+          Get-NetTCPConnection `
+            -LocalPort 3000 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
 
 
       # ========================================
-      # Copy application
+      # Clean old dependencies
       # ========================================
 
-      - name: Copy application files
+      - name: Clean node_modules
         shell: powershell
         run: |
-          $appDirectory = "C:\apps\hello-world"
+          if (Test-Path "node_modules") {
+              Write-Host "Removing old node_modules..."
 
-          Copy-Item "package.json" `
-            "$appDirectory\package.json" `
-            -Force
-
-          if (Test-Path "package-lock.json") {
-              Copy-Item "package-lock.json" `
-                "$appDirectory\package-lock.json" `
-                -Force
+              Remove-Item `
+                -Path "node_modules" `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
           }
 
-          Copy-Item "app.js" `
-            "$appDirectory\app.js" `
-            -Force
-
-          Write-Host "Application files copied."
-
-
-      # ========================================
-      # Verify application files
-      # ========================================
-
-      - name: Verify application files
-        shell: powershell
-        run: |
-          $appDirectory = "C:\apps\hello-world"
-
-          if (!(Test-Path "$appDirectory\package.json")) {
-              Write-Error "package.json not found."
-              exit 1
-          }
-
-          if (!(Test-Path "$appDirectory\app.js")) {
-              Write-Error "app.js not found."
-              exit 1
-          }
-
-          Write-Host "Required application files verified."
+          Write-Host "node_modules cleanup completed."
 
 
       # ========================================
       # Install dependencies
       # ========================================
 
-      - name: Install npm dependencies
+      - name: Install dependencies
         shell: powershell
         run: |
-          Set-Location "C:\apps\hello-world"
-
           npm ci
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "npm ci failed."
-              exit 1
-          }
-
-          Write-Host "npm dependencies installed successfully."
-
 
       # ========================================
-      # Stop existing application
+      # Build application
       # ========================================
 
-      - name: Stop existing Node.js application
+      - name: Build application
         shell: powershell
         run: |
-          $processes = Get-Process node -ErrorAction SilentlyContinue
+          npm run build
 
-          if ($processes) {
-              Write-Host "Stopping existing Node.js processes..."
 
-              $processes | Stop-Process -Force -ErrorAction SilentlyContinue
+      # ========================================
+      # Start application in background
+      # ========================================
+
+      - name: Start application
+        shell: powershell
+        run: |
+
+          if (Test-Path "app.log") {
+              Remove-Item "app.log" -Force
+          }
+
+          Write-Host "Starting Node.js application..."
+
+          $env:PORT = "3000"
+
+          Start-Process `
+            -FilePath "cmd.exe" `
+            -ArgumentList "/c npm start > app.log 2>&1" `
+            -WorkingDirectory "$PWD" `
+            -WindowStyle Hidden
+
+          Write-Host "Application process started."
+
+          Start-Sleep -Seconds 5
+
+          Write-Host ""
+          Write-Host "===== Application Log ====="
+
+          if (Test-Path "app.log") {
+              Get-Content "app.log"
+          }
+
+
+      # ========================================
+      # Verify port 3000
+      # ========================================
+
+      - name: Verify application port
+        shell: powershell
+        run: |
+
+          Write-Host "Checking whether port 3000 is listening..."
+
+          $listening = $false
+
+          for ($i = 1; $i -le 10; $i++) {
+
+              $connection = Get-NetTCPConnection `
+                -LocalPort 3000 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+
+              if ($connection) {
+                  Write-Host "Port 3000 is listening."
+                  $listening = $true
+                  break
+              }
+
+              Write-Host "Port 3000 not ready. Attempt $i/10"
 
               Start-Sleep -Seconds 2
-
-              Write-Host "Existing Node.js processes stopped."
           }
-          else {
-              Write-Host "No existing Node.js process found. Continuing..."
+
+          if (-not $listening) {
+
+              Write-Host ""
+              Write-Host "===== Application Log ====="
+
+              if (Test-Path "app.log") {
+                  Get-Content "app.log"
+              }
+
+              throw "Application did not start on port 3000."
           }
 
 
       # ========================================
-      # Start application
-      # ========================================
-
-      - name: Start Node.js application
-        shell: powershell
-        run: |
-          $appDirectory = "C:\apps\hello-world"
-
-          $logPath = "$appDirectory\app.log"
-          $errorLogPath = "$appDirectory\app-error.log"
-          $pidPath = "$appDirectory\app.pid"
-
-          if (Test-Path $logPath) {
-              Remove-Item $logPath -Force
-          }
-
-          if (Test-Path $errorLogPath) {
-              Remove-Item $errorLogPath -Force
-          }
-
-          $process = Start-Process `
-            -FilePath "node" `
-            -ArgumentList "app.js" `
-            -WorkingDirectory $appDirectory `
-            -RedirectStandardOutput $logPath `
-            -RedirectStandardError $errorLogPath `
-            -WindowStyle Hidden `
-            -PassThru
-
-          $process.Id | Out-File `
-            -FilePath $pidPath `
-            -Encoding ascii
-
-          Write-Host "Application started."
-          Write-Host "PID: $($process.Id)"
-          Write-Host "PORT: $env:PORT"
-
-
-      # ========================================
-      # Health check
+      # Health Check
       # ========================================
 
       - name: Wait for application health
         shell: powershell
         run: |
-          $maxRetries = 10
+
+          $healthUrl = "http://localhost:3000/health"
+          $maxRetries = 20
           $retryDelay = 3
-          $healthUrl = "http://localhost:$env:PORT/health"
 
           Write-Host "Waiting for application to become healthy..."
           Write-Host "Health URL: $healthUrl"
 
-          for ($i = 1; $i -le $maxRetries; $i++) {
+          $healthy = $false
+
+          for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
 
               try {
 
@@ -216,166 +226,76 @@ jobs:
                     -TimeoutSec 5 `
                     -ErrorAction Stop
 
+                  Write-Host "Attempt $attempt/$maxRetries succeeded."
+                  Write-Host "HTTP Status: $($response.StatusCode)"
+                  Write-Host "Response: $($response.Content)"
+
                   if ($response.StatusCode -eq 200) {
-
-                      Write-Host "========================================"
-                      Write-Host "APPLICATION IS HEALTHY"
-                      Write-Host "========================================"
-
-                      Write-Host "Response:"
-                      Write-Host $response.Content
-
-                      exit 0
+                      $healthy = $true
+                      break
                   }
 
               }
               catch {
 
-                  Write-Host "Attempt $i/$maxRetries failed."
+                  Write-Host "Attempt $attempt/$maxRetries failed."
+                  Write-Host $_.Exception.Message
               }
 
-              if ($i -lt $maxRetries) {
-                  Start-Sleep -Seconds $retryDelay
+              Start-Sleep -Seconds $retryDelay
+          }
+
+          if (-not $healthy) {
+
+              Write-Host ""
+              Write-Host "========================================"
+              Write-Host "APPLICATION HEALTH CHECK FAILED"
+              Write-Host "========================================"
+
+              Write-Host ""
+              Write-Host "===== Port 3000 ====="
+
+              Get-NetTCPConnection `
+                -LocalPort 3000 `
+                -ErrorAction SilentlyContinue |
+                Format-Table -AutoSize
+
+              Write-Host ""
+              Write-Host "===== Node Processes ====="
+
+              Get-Process node `
+                -ErrorAction SilentlyContinue |
+                Select-Object Id, ProcessName, Path
+
+              Write-Host ""
+              Write-Host "===== Application Log ====="
+
+              if (Test-Path "app.log") {
+                  Get-Content "app.log"
               }
-          }
+              else {
+                  Write-Host "app.log was not found."
+              }
 
-          Write-Host "========================================"
-          Write-Host "APPLICATION FAILED HEALTH CHECK"
-          Write-Host "========================================"
-
-          Write-Host ""
-          Write-Host "Application log:"
-          if (Test-Path "C:\apps\hello-world\app.log") {
-              Get-Content "C:\apps\hello-world\app.log"
+              throw "Application failed health check: $healthUrl"
           }
 
           Write-Host ""
-          Write-Host "Application error log:"
-          if (Test-Path "C:\apps\hello-world\app-error.log") {
-              Get-Content "C:\apps\hello-world\app-error.log"
-          }
-
-          exit 1
+          Write-Host "========================================"
+          Write-Host "APPLICATION IS HEALTHY"
+          Write-Host "========================================"
 
 
       # ========================================
-      # Verify process
+      # Deployment Summary
       # ========================================
 
-      - name: Verify Node.js process
-        shell: powershell
-        run: |
-          $processes = Get-Process node -ErrorAction SilentlyContinue
-
-          if (!$processes) {
-              Write-Error "No Node.js process found."
-              exit 1
-          }
-
-          Write-Host "Node.js application is running."
-
-          $processes | ForEach-Object {
-              Write-Host "PID: $($_.Id)"
-          }
-
-
-      # ========================================
-      # Verify port
-      # ========================================
-
-      - name: Verify application port
-        shell: powershell
-        run: |
-          $connection = Get-NetTCPConnection `
-            -LocalPort $env:PORT `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-          if (!$connection) {
-              Write-Error "Nothing is listening on port $env:PORT."
-              exit 1
-          }
-
-          Write-Host "Port $env:PORT is listening."
-
-
-      # ========================================
-      # Deployment summary
-      # ========================================
-
-      - name: Deployment summary
-        if: success()
+      - name: Deployment successful
         shell: powershell
         run: |
           Write-Host ""
           Write-Host "========================================"
-          Write-Host " WINDOWS DEPLOYMENT SUCCESSFUL"
+          Write-Host "DEPLOYMENT SUCCESSFUL"
           Write-Host "========================================"
-          Write-Host ""
-          Write-Host "Application: hello-world"
-          Write-Host "Directory:   C:\apps\hello-world"
-          Write-Host "Port:        $env:PORT"
-          Write-Host ""
-          Write-Host "Application:"
-          Write-Host "http://localhost:$env:PORT/"
-          Write-Host ""
-          Write-Host "Health:"
-          Write-Host "http://localhost:$env:PORT/health"
-          Write-Host ""
-          Write-Host "Log:"
-          Write-Host "C:\apps\hello-world\app.log"
-          Write-Host ""
-          Write-Host "Error log:"
-          Write-Host "C:\apps\hello-world\app-error.log"
-          Write-Host ""
-          Write-Host "========================================"
-
-
-      # ========================================
-      # Failure diagnostics
-      # ========================================
-
-      - name: Deployment diagnostics
-        if: failure()
-        shell: powershell
-        run: |
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host " DEPLOYMENT FAILED - DIAGNOSTICS"
-          Write-Host "========================================"
-
-          Write-Host ""
-          Write-Host "Node.js:"
-          node --version
-
-          Write-Host ""
-          Write-Host "PORT:"
-          Write-Host $env:PORT
-
-          Write-Host ""
-          Write-Host "Application directory:"
-          Get-ChildItem "C:\apps\hello-world" `
-            -ErrorAction SilentlyContinue
-
-          Write-Host ""
-          Write-Host "Node processes:"
-          Get-Process node `
-            -ErrorAction SilentlyContinue
-
-          Write-Host ""
-          Write-Host "Port $env:PORT:"
-          Get-NetTCPConnection `
-            -LocalPort $env:PORT `
-            -ErrorAction SilentlyContinue
-
-          Write-Host ""
-          Write-Host "Application log:"
-          if (Test-Path "C:\apps\hello-world\app.log") {
-              Get-Content "C:\apps\hello-world\app.log"
-          }
-
-          Write-Host ""
-          Write-Host "Application error log:"
-          if (Test-Path "C:\apps\hello-world\app-error.log") {
-              Get-Content "C:\apps\hello-world\app-error.log"
-          }
+          Write-Host "Application: http://localhost:3000"
+          Write-Host "Health:      http://localhost:3000/health"
