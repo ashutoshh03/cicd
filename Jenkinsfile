@@ -2,9 +2,6 @@ pipeline {
     agent any
 
     environment {
-        // macOS paths
-        PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
         APP_NAME = 'hello-world'
         IMAGE_NAME = 'hello-world'
 
@@ -19,65 +16,79 @@ pipeline {
         stage('Checkout') {
             steps {
                 echo 'Checking out source code from GitHub...'
-
                 checkout scm
             }
         }
 
         stage('Verify Environment') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "========================================"
-                    echo "VERIFYING ENVIRONMENT"
-                    echo "========================================"
+                    Write-Host "========================================"
+                    Write-Host "VERIFYING ENVIRONMENT"
+                    Write-Host "========================================"
 
-                    echo ""
-                    echo "Node.js:"
-                    which node
+                    Write-Host ""
+                    Write-Host "Node.js:"
+                    Get-Command node
                     node --version
 
-                    echo ""
-                    echo "NPM:"
-                    which npm
+                    Write-Host ""
+                    Write-Host "NPM:"
+                    Get-Command npm
                     npm --version
 
-                    echo ""
-                    echo "Docker:"
-                    which docker
+                    Write-Host ""
+                    Write-Host "Docker:"
+                    Get-Command docker
                     docker --version
 
-                    echo ""
-                    echo "kubectl:"
-                    which kubectl
+                    Write-Host ""
+                    Write-Host "kubectl:"
+                    Get-Command kubectl
                     kubectl version --client
 
-                    echo ""
-                    echo "Minikube:"
-                    which minikube
+                    Write-Host ""
+                    Write-Host "Minikube:"
+                    Get-Command minikube
                     minikube version
 
-                    echo ""
-                    echo "Starting Minikube if not already running..."
-                    
-                    if ! minikube status | grep -q "host: Running"; then
-                        echo "Minikube is not running, starting it..."
-                        minikube start --driver=docker || minikube start
-                    else
-                        echo "Minikube is already running"
-                    fi
+                    Write-Host ""
+                    Write-Host "Starting Minikube if not already running..."
 
-                    echo ""
-                    echo "Kubernetes context:"
+                    $status = minikube status --output=json 2>$null
+
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "Minikube is not running, starting it..."
+                        minikube start --driver=docker
+
+                        if ($LASTEXITCODE -ne 0) {
+                            minikube start
+                        }
+                    }
+                    else {
+                        $statusJson = $status | ConvertFrom-Json
+
+                        if ($statusJson.Host -and $statusJson.Host.Status -eq "Running") {
+                            Write-Host "Minikube is already running"
+                        }
+                        else {
+                            Write-Host "Minikube is not running, starting it..."
+                            minikube start --driver=docker
+                        }
+                    }
+
+                    Write-Host ""
+                    Write-Host "Kubernetes context:"
                     kubectl config current-context
 
-                    echo ""
-                    echo "Minikube status:"
+                    Write-Host ""
+                    Write-Host "Minikube status:"
                     minikube status
 
-                    echo ""
-                    echo "Kubernetes nodes:"
+                    Write-Host ""
+                    Write-Host "Kubernetes nodes:"
                     kubectl get nodes
                 '''
             }
@@ -85,11 +96,10 @@ pipeline {
 
         stage('Install Dependencies') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "Installing dependencies..."
-
+                    Write-Host "Installing dependencies..."
                     npm ci
                 '''
             }
@@ -97,11 +107,10 @@ pipeline {
 
         stage('Unit Test') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "Running unit tests..."
-
+                    Write-Host "Running unit tests..."
                     npm test
                 '''
             }
@@ -109,11 +118,10 @@ pipeline {
 
         stage('Build Application') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "Building application..."
-
+                    Write-Host "Building application..."
                     npm run build
                 '''
             }
@@ -121,23 +129,26 @@ pipeline {
 
         stage('Archive Artifact') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "Creating application artifact..."
+                    Write-Host "Creating application artifact..."
 
-                    rm -rf artifact
-                    mkdir -p artifact
+                    if (Test-Path "artifact") {
+                        Remove-Item "artifact" -Recurse -Force
+                    }
 
-                    cp package.json artifact/
-                    cp package-lock.json artifact/
+                    New-Item -ItemType Directory -Path "artifact" | Out-Null
 
-                    if [ -d "src" ]; then
-                        cp -R src artifact/
-                    fi
+                    Copy-Item "package.json" "artifact/"
+                    Copy-Item "package-lock.json" "artifact/"
 
-                    echo "Artifact contents:"
-                    find artifact -type f
+                    if (Test-Path "src") {
+                        Copy-Item "src" "artifact/" -Recurse
+                    }
+
+                    Write-Host "Artifact contents:"
+                    Get-ChildItem "artifact" -Recurse
                 '''
 
                 archiveArtifacts(
@@ -149,65 +160,66 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "========================================"
-                    echo "BUILDING DOCKER IMAGE"
-                    echo "========================================"
+                    Write-Host "========================================"
+                    Write-Host "BUILDING DOCKER IMAGE"
+                    Write-Host "========================================"
 
-                    echo "Building image inside Minikube..."
+                    Write-Host "Building image inside Minikube..."
 
-                    minikube image build \
-                        -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                    $tag = "$env:IMAGE_NAME`:$env:BUILD_NUMBER"
 
-                    echo ""
-                    echo "Image built:"
-                    echo "${IMAGE_NAME}:${BUILD_NUMBER}"
+                    minikube image build -t $tag .
 
-                    echo ""
-                    echo "Checking image in Minikube:"
+                    Write-Host ""
+                    Write-Host "Image built:"
+                    Write-Host $tag
 
-                    minikube image ls | grep "${IMAGE_NAME}" || true
+                    Write-Host ""
+                    Write-Host "Checking image in Minikube:"
+
+                    minikube image ls | Select-String $env:IMAGE_NAME
                 '''
             }
         }
 
         stage('Deploy to Kubernetes') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "========================================"
-                    echo "DEPLOYING TO KUBERNETES"
-                    echo "========================================"
+                    Write-Host "========================================"
+                    Write-Host "DEPLOYING TO KUBERNETES"
+                    Write-Host "========================================"
 
-                    kubectl config use-context ${K8S_CONTEXT}
+                    kubectl config use-context $env:K8S_CONTEXT
 
-                    echo ""
-                    echo "Applying Deployment..."
+                    Write-Host ""
+                    Write-Host "Applying Deployment..."
 
-                    kubectl apply \
-                        -f ${DEPLOYMENT_FILE}
+                    kubectl apply -f $env:DEPLOYMENT_FILE
 
-                    echo ""
-                    echo "Applying Service..."
+                    Write-Host ""
+                    Write-Host "Applying Service..."
 
-                    kubectl apply \
-                        -f ${SERVICE_FILE}
+                    kubectl apply -f $env:SERVICE_FILE
 
-                    echo ""
-                    echo "Updating image..."
+                    Write-Host ""
+                    Write-Host "Updating image..."
 
-                    kubectl set image \
-                        deployment/${APP_NAME} \
-                        ${APP_NAME}=${IMAGE_NAME}:${BUILD_NUMBER}
+                    $image = "$env:IMAGE_NAME`:$env:BUILD_NUMBER"
 
-                    echo ""
-                    echo "Waiting for rollout..."
+                    kubectl set image `
+                        "deployment/$env:APP_NAME" `
+                        "$env:APP_NAME=$image"
 
-                    kubectl rollout status \
-                        deployment/${APP_NAME} \
+                    Write-Host ""
+                    Write-Host "Waiting for rollout..."
+
+                    kubectl rollout status `
+                        "deployment/$env:APP_NAME" `
                         --timeout=180s
                 '''
             }
@@ -215,106 +227,127 @@ pipeline {
 
         stage('Verify Deployment') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "========================================"
-                    echo "VERIFYING DEPLOYMENT"
-                    echo "========================================"
+                    Write-Host "========================================"
+                    Write-Host "VERIFYING DEPLOYMENT"
+                    Write-Host "========================================"
 
-                    echo ""
-                    echo "Deployment:"
-                    kubectl get deployment ${APP_NAME}
+                    Write-Host ""
+                    Write-Host "Deployment:"
+                    kubectl get deployment $env:APP_NAME
 
-                    echo ""
-                    echo "Pods:"
-                    kubectl get pods \
-                        -l app=${APP_NAME} \
+                    Write-Host ""
+                    Write-Host "Pods:"
+                    kubectl get pods `
+                        -l "app=$env:APP_NAME" `
                         -o wide
 
-                    echo ""
-                    echo "Service:"
-                    kubectl get service ${APP_NAME}
+                    Write-Host ""
+                    Write-Host "Service:"
+                    kubectl get service $env:APP_NAME
 
-                    echo ""
-                    echo "Replica count:"
-                    kubectl get deployment ${APP_NAME} \
+                    Write-Host ""
+                    Write-Host "Replica count:"
+                    kubectl get deployment $env:APP_NAME `
                         -o jsonpath='{.status.replicas}'
 
-                    echo ""
+                    Write-Host ""
 
-                    echo "Ready replicas:"
-                    kubectl get deployment ${APP_NAME} \
+                    Write-Host "Ready replicas:"
+                    kubectl get deployment $env:APP_NAME `
                         -o jsonpath='{.status.readyReplicas}'
 
-                    echo ""
+                    Write-Host ""
                 '''
             }
         }
 
         stage('Verify Self-Healing') {
             steps {
-                sh '''
-                    set -eux
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                    echo "========================================"
-                    echo "VERIFYING SELF-HEALING (Replica Management)"
-                    echo "========================================"
+                    Write-Host "========================================"
+                    Write-Host "VERIFYING SELF-HEALING"
+                    Write-Host "========================================"
 
-                    echo ""
-                    echo "Initial pod count:"
-                    INITIAL_PODS=$(kubectl get pods -l app=${APP_NAME} --no-headers | wc -l)
-                    echo "Total pods: $INITIAL_PODS"
+                    Write-Host ""
+                    Write-Host "Initial pod count:"
 
-                    kubectl get pods -l app=${APP_NAME} -o wide
+                    $pods = @(kubectl get pods `
+                        -l "app=$env:APP_NAME" `
+                        --no-headers)
 
-                    if [ "$INITIAL_PODS" -lt 2 ]; then
-                        echo "WARNING: Expected at least 2 replicas, but found $INITIAL_PODS"
-                    fi
+                    $initialPods = $pods.Count
 
-                    echo ""
-                    echo "Selecting a pod to delete..."
+                    Write-Host "Total pods: $initialPods"
 
-                    POD_NAME=$(kubectl get pods \
-                        -l app=${APP_NAME} \
-                        -o jsonpath="{.items[0].metadata.name}")
+                    kubectl get pods `
+                        -l "app=$env:APP_NAME" `
+                        -o wide
 
-                    echo "Pod selected for deletion: ${POD_NAME}"
+                    if ($initialPods -lt 2) {
+                        Write-Host "WARNING: Expected at least 2 replicas, but found $initialPods"
+                    }
 
-                    echo ""
-                    echo "Pod details before deletion:"
-                    kubectl describe pod ${POD_NAME} | grep -A 5 "Status:"
+                    Write-Host ""
+                    Write-Host "Selecting a pod to delete..."
 
-                    echo ""
-                    echo "Deleting pod: ${POD_NAME}"
+                    $podName = kubectl get pods `
+                        -l "app=$env:APP_NAME" `
+                        -o jsonpath='{.items[0].metadata.name}'
 
-                    kubectl delete pod ${POD_NAME} --grace-period=5
+                    if ([string]::IsNullOrWhiteSpace($podName)) {
+                        throw "No pod found for application $env:APP_NAME"
+                    }
 
-                    echo ""
-                    echo "Waiting for Kubernetes to recreate pods (self-healing in action)..."
+                    Write-Host "Pod selected for deletion: $podName"
 
-                    sleep 15
+                    Write-Host ""
+                    Write-Host "Pod details before deletion:"
 
-                    echo ""
-                    echo "Pod status after deletion (should show new pod):"
+                    kubectl describe pod $podName
 
-                    kubectl get pods -l app=${APP_NAME} -o wide
+                    Write-Host ""
+                    Write-Host "Deleting pod: $podName"
 
-                    echo ""
-                    echo "Checking pod creation timestamp:"
-                    kubectl get pods -l app=${APP_NAME} -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}'
+                    kubectl delete pod $podName --grace-period=5
 
-                    echo ""
-                    echo "Waiting for all replicas to be ready..."
+                    Write-Host ""
+                    Write-Host "Waiting for Kubernetes to recreate pod..."
 
-                    kubectl rollout status deployment/${APP_NAME} --timeout=180s
+                    Start-Sleep -Seconds 15
 
-                    echo ""
-                    echo "Final deployment status:"
-                    kubectl get deployment ${APP_NAME} -o jsonpath='{.status.replicas} replicas, {.status.readyReplicas} ready'
-                    echo ""
+                    Write-Host ""
+                    Write-Host "Pod status after deletion:"
 
-                    echo "✓ Self-healing verification completed successfully!"
+                    kubectl get pods `
+                        -l "app=$env:APP_NAME" `
+                        -o wide
+
+                    Write-Host ""
+                    Write-Host "Checking pod creation timestamps:"
+
+                    kubectl get pods `
+                        -l "app=$env:APP_NAME" `
+                        -o custom-columns="NAME:.metadata.name,CREATED:.metadata.creationTimestamp"
+
+                    Write-Host ""
+                    Write-Host "Waiting for all replicas to be ready..."
+
+                    kubectl rollout status `
+                        "deployment/$env:APP_NAME" `
+                        --timeout=180s
+
+                    Write-Host ""
+                    Write-Host "Final deployment status:"
+
+                    kubectl get deployment $env:APP_NAME
+
+                    Write-Host ""
+                    Write-Host "Self-healing verification completed successfully!"
                 '''
             }
         }
