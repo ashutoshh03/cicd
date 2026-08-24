@@ -20,79 +20,79 @@ pipeline {
             }
         }
 
-        stage('Verify Environment') {
-            steps {
-                powershell '''
-                    $ErrorActionPreference = "Stop"
+        // stage('Verify Environment') {
+        //     steps {
+        //         powershell '''
+        //             $ErrorActionPreference = "Stop"
 
-                    Write-Host "========================================"
-                    Write-Host "VERIFYING ENVIRONMENT"
-                    Write-Host "========================================"
+        //             Write-Host "========================================"
+        //             Write-Host "VERIFYING ENVIRONMENT"
+        //             Write-Host "========================================"
 
-                    Write-Host ""
-                    Write-Host "Node.js:"
-                    Get-Command node
-                    node --version
+        //             Write-Host ""
+        //             Write-Host "Node.js:"
+        //             Get-Command node
+        //             node --version
 
-                    Write-Host ""
-                    Write-Host "NPM:"
-                    Get-Command npm
-                    npm --version
+        //             Write-Host ""
+        //             Write-Host "NPM:"
+        //             Get-Command npm
+        //             npm --version
 
-                    Write-Host ""
-                    Write-Host "Docker:"
-                    Get-Command docker
-                    docker --version
+        //             Write-Host ""
+        //             Write-Host "Docker:"
+        //             Get-Command docker
+        //             docker --version
 
-                    Write-Host ""
-                    Write-Host "kubectl:"
-                    Get-Command kubectl
-                    kubectl version --client
+        //             Write-Host ""
+        //             Write-Host "kubectl:"
+        //             Get-Command kubectl
+        //             kubectl version --client
 
-                    Write-Host ""
-                    Write-Host "Minikube:"
-                    Get-Command minikube
-                    minikube version
+        //             Write-Host ""
+        //             Write-Host "Minikube:"
+        //             Get-Command minikube
+        //             minikube version
 
-                    Write-Host ""
-                    Write-Host "Starting Minikube if not already running..."
+        //             Write-Host ""
+        //             Write-Host "Starting Minikube if not already running..."
 
-                    $status = minikube status --output=json 2>$null
+        //             $status = minikube status --output=json 2>$null
 
-                    if ($LASTEXITCODE -ne 0) {
-                        Write-Host "Minikube is not running, starting it..."
-                        minikube start --driver=docker
+        //             if ($LASTEXITCODE -ne 0) {
+        //                 Write-Host "Minikube is not running, starting it..."
+        //                 minikube start --driver=docker
 
-                        if ($LASTEXITCODE -ne 0) {
-                            minikube start
-                        }
-                    }
-                    else {
-                        $statusJson = $status | ConvertFrom-Json
+        //                 if ($LASTEXITCODE -ne 0) {
+        //                     minikube start
+        //                 }
+        //             }
+        //             else {
+        //                 $statusJson = $status | ConvertFrom-Json
 
-                        if ($statusJson.Host -and $statusJson.Host.Status -eq "Running") {
-                            Write-Host "Minikube is already running"
-                        }
-                        else {
-                            Write-Host "Minikube is not running, starting it..."
-                            minikube start --driver=docker
-                        }
-                    }
+        //                 if ($statusJson.Host -and $statusJson.Host.Status -eq "Running") {
+        //                     Write-Host "Minikube is already running"
+        //                 }
+        //                 else {
+        //                     Write-Host "Minikube is not running, starting it..."
+        //                     minikube start --driver=docker
+        //                 }
+        //             }
 
-                    Write-Host ""
-                    Write-Host "Kubernetes context:"
-                    kubectl config current-context
+        //             Write-Host ""
+        //             Write-Host "Kubernetes context:"
+        //             kubectl config current-context
 
-                    Write-Host ""
-                    Write-Host "Minikube status:"
-                    minikube status
+        //             Write-Host ""
+        //             Write-Host "Minikube status:"
+        //             minikube status
 
-                    Write-Host ""
-                    Write-Host "Kubernetes nodes:"
-                    kubectl get nodes
-                '''
-            }
-        }
+        //             Write-Host ""
+        //             Write-Host "Kubernetes nodes:"
+        //             kubectl get nodes
+        //         '''
+        //     }
+        // }
 
         stage('Install Dependencies') {
             steps {
