@@ -1,0 +1,83 @@
+# Development environment values for hello-world Helm chart
+
+global:
+  environment: dev
+  domain: dev.example.com
+
+image:
+  repository: hello-world
+  pullPolicy: Always
+  tag: "latest"
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+  hosts:
+    - host: hello-world.dev.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hello-world-dev-tls
+      hosts:
+        - hello-world.dev.example.com
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+
+env:
+  - name: PORT
+    value: "3000"
+  - name: NODE_ENV
+    value: development
+  - name: LOG_LEVEL
+    value: debug
+
+configMap:
+  enabled: true
+  data:
+    APP_NAME: "hello-world"
+    LOG_LEVEL: "debug"
+    ENV: "development"
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+podDisruptionBudget:
+  enabled: false

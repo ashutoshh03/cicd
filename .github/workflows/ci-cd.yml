@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline - Build, Test, and Deploy to Kubernetes
 
 on:
   workflow_dispatch:
@@ -7,17 +7,31 @@ on:
   pull_request:
     branches: [ main, master ]
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/hello-world
+  ARTIFACT_NAME: hello-world-app
+
 jobs:
+  # Stage 1: Build and Test
   build-and-test:
     runs-on: ubuntu-latest
+    outputs:
+      build-version: ${{ steps.version.outputs.version }}
 
     steps:
-    - uses: actions/checkout@v7
+    - name: Checkout source code
+      uses: actions/checkout@v4
+
+    - name: Generate version
+      id: version
+      run: echo "version=${{ github.sha }}" >> $GITHUB_OUTPUT
 
     - name: Set up Node.js
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@v4
       with:
         node-version: '22'
+        cache: 'npm'
 
     - name: Install dependencies
       run: npm install
@@ -25,72 +39,121 @@ jobs:
     - name: Run tests
       run: npm test
 
-    - name: Build
+    - name: Build application
       run: npm run build
 
-    - name: Create artifact
+    - name: Create application artifact
       run: |
         mkdir -p dist
-        zip -r dist/hello-world.zip . -x "node_modules/*" ".git/*" ".github/*" "dist/*"
+        zip -r dist/${{ env.ARTIFACT_NAME }}.zip . \
+          -x "node_modules/*" ".git/*" ".github/*" "dist/*" "k8s/*" "ansible/*" "tests/*"
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v7
+    - name: Upload application artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: hello-world-app
-        path: dist/hello-world.zip
+        name: ${{ env.ARTIFACT_NAME }}
+        path: dist/${{ env.ARTIFACT_NAME }}.zip
+        retention-days: 5
 
+  # Stage 2: Build and Push Docker Image
   build-docker:
     needs: build-and-test
     runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
 
     steps:
-    - uses: actions/checkout@v7
-    # Vesion issue have to check 
+    - name: Checkout source code
+      uses: actions/checkout@v4
+
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
+      uses: docker/setup-buildx-action@v3
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=semver,pattern={{version}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build Docker image
-      run: docker build -t hello-world:latest .
+      id: build
+      run: |
+        docker build -t ${{ env.IMAGE_NAME }}:${{ needs.build-and-test.outputs.build-version }} .
+        docker image ls
 
-    - name: Save Docker image
-      run: docker save hello-world:latest -o hello-world-docker.tar
+    - name: Save Docker image as artifact
+      run: |
+        docker save ${{ env.IMAGE_NAME }}:${{ needs.build-and-test.outputs.build-version }} \
+          -o hello-world-docker-${{ needs.build-and-test.outputs.build-version }}.tar
 
     - name: Upload Docker image artifact
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v4
       with:
-        name: hello-world-docker
-        path: hello-world-docker.tar
+        name: docker-image-${{ needs.build-and-test.outputs.build-version }}
+        path: hello-world-docker-*.tar
+        retention-days: 5
 
+  # Stage 3: Deploy to Kubernetes (Minikube)
   deploy-kubernetes:
-    needs: build-docker
+    needs: [build-and-test, build-docker]
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v7
+    - name: Checkout source code
+      uses: actions/checkout@v4
 
     - name: Start Minikube
       uses: medyagh/setup-minikube@master
+      with:
+        kubernetes-version: v1.28.0
 
     - name: Download Docker image artifact
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@v4
       with:
-        name: hello-world-docker
+        name: docker-image-${{ needs.build-and-test.outputs.build-version }}
 
     - name: Load Docker image into Minikube
       run: |
         eval $(minikube docker-env)
-        docker load -i hello-world-docker.tar
+        docker load -i hello-world-docker-${{ needs.build-and-test.outputs.build-version }}.tar
+        docker images
+
+    - name: Update Kubernetes deployment image
+      run: |
+        sed -i 's|hello-world:latest|${{ env.IMAGE_NAME }}:${{ needs.build-and-test.outputs.build-version }}|g' k8s/deployment.yaml
 
     - name: Deploy to Kubernetes
       run: |
-        kubectl apply -f k8s/deployment.yaml
         kubectl apply -f k8s/service.yaml
+        kubectl apply -f k8s/deployment.yaml
 
-    - name: Wait for deployment
-      run: kubectl rollout status deployment/hello-world -n default
+    - name: Wait for deployment to rollout
+      run: |
+        kubectl rollout status deployment/hello-world -n default --timeout=5m
 
-    - name: Check pods
-      run: kubectl get pods -o wide
+    - name: Verify deployment
+      run: |
+        echo "=== Deployment Status ==="
+        kubectl get deployment -o wide
+        echo ""
+        echo "=== Pod Status ==="
+        kubectl get pods -o wide
+        echo ""
+        echo "=== Service Status ==="
+        kubectl get service hello-world
+        echo ""
+        echo "=== Describe Service ==="
+        kubectl describe service hello-world
 
-    - name: Get service info
-      run: kubectl get service hello-world
+    - name: Port Forward and Test Service
+      run: |
+        kubectl port-forward service/hello-world 3000:3000 &
+        sleep 5
+        curl -v http://localhost:3000/
+        curl -v http://localhost:3000/health

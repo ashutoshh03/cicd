@@ -1,0 +1,331 @@
+name: Deploy Artifact to Linux VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment (dev/qa/prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+  push:
+    branches:
+      - main
+      - master
+  workflow_run:
+    workflows: ["CI/CD Pipeline - Build, Test, and Deploy to Kubernetes"]
+    types:
+      - completed
+
+jobs:
+  build-artifact:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-version: ${{ steps.version.outputs.version }}
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v4
+
+    - name: Generate version
+      id: version
+      run: |
+        VERSION="${{ github.sha }}"
+        echo "version=${VERSION:0:8}" >> $GITHUB_OUTPUT
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Build application
+      run: npm run build
+
+    - name: Create application artifact
+      run: |
+        mkdir -p dist
+        zip -r dist/hello-world-app.zip . \
+          -x "node_modules/*" ".git/*" ".github/*" "dist/*" "k8s/*" "helm/*" "ansible/*" "tests/*"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: hello-world-app
+        path: dist/hello-world-app.zip
+        retention-days: 7
+
+  deploy-linux:
+    needs: build-artifact
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    strategy:
+      matrix:
+        environment: [dev]
+
+    env:
+      LINUX_VM_HOST: ${{ secrets.LINUX_VM_HOST }}
+      LINUX_VM_USER: ${{ secrets.LINUX_VM_USER }}
+      LINUX_VM_KEY: ${{ secrets.LINUX_VM_SSH_KEY }}
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v4
+
+    - name: Validate deployment prerequisites
+      run: |
+        echo "Validating deployment prerequisites..."
+        
+        if [ -z "$LINUX_VM_HOST" ]; then
+          echo "ERROR: LINUX_VM_HOST secret is not set"
+          exit 1
+        fi
+        
+        if [ -z "$LINUX_VM_USER" ]; then
+          echo "ERROR: LINUX_VM_USER secret is not set"
+          exit 1
+        fi
+        
+        if [ -z "$LINUX_VM_KEY" ]; then
+          echo "ERROR: LINUX_VM_SSH_KEY secret is not set"
+          exit 1
+        fi
+        
+        echo "✓ All required secrets are configured"
+
+    - name: Set up SSH key
+      run: |
+        echo "Setting up SSH key..."
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        echo "$LINUX_VM_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        
+        # Add host to known_hosts to avoid prompts
+        ssh-keyscan -H "$LINUX_VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+        
+        echo "✓ SSH key configured"
+
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: hello-world-app
+
+    - name: Prepare artifact for deployment
+      run: |
+        echo "Preparing artifact..."
+        
+        if [ ! -f "hello-world-app.zip" ]; then
+          echo "ERROR: Artifact not found"
+          exit 1
+        fi
+        
+        mkdir -p dist
+        mv hello-world-app.zip dist/
+        
+        echo "Artifact size: $(du -h dist/hello-world-app.zip | cut -f1)"
+        echo "✓ Artifact prepared"
+
+    - name: Install Ansible
+      run: |
+        echo "Installing Ansible..."
+        
+        sudo apt-get update
+        sudo apt-get install -y ansible python3-pip
+        pip3 install -U ansible
+        
+        echo "Ansible version:"
+        ansible --version
+
+    - name: Create Ansible inventory
+      run: |
+        echo "Creating dynamic Ansible inventory..."
+        
+        cat > /tmp/linux-inventory.yml << EOF
+all:
+  hosts:
+    linux_vm:
+      ansible_host: $LINUX_VM_HOST
+      ansible_user: $LINUX_VM_USER
+      ansible_ssh_private_key_file: ~/.ssh/id_rsa
+      ansible_python_interpreter: /usr/bin/python3
+      app_port: 3000
+      app_directory: /opt/hello-world
+      app_user: $LINUX_VM_USER
+  vars:
+    ansible_connection: ssh
+    ansible_port: 22
+    deployment_env: ${{ matrix.environment }}
+    app_name: hello-world
+    artifact_source_dir: /tmp/artifacts
+    artifact_name: hello-world-app
+EOF
+        
+        echo "Inventory created:"
+        cat /tmp/linux-inventory.yml
+
+    - name: Verify SSH connectivity
+      run: |
+        echo "Testing SSH connectivity to Linux VM..."
+        
+        ssh -v -i ~/.ssh/id_rsa \
+          -o StrictHostKeyChecking=accept-new \
+          -o ConnectTimeout=10 \
+          "$LINUX_VM_USER@$LINUX_VM_HOST" \
+          "echo 'SSH connection successful' && uname -a" || {
+          echo "ERROR: Could not connect to Linux VM"
+          exit 1
+        }
+
+    - name: Copy artifact to Linux VM
+      run: |
+        echo "Copying artifact to Linux VM..."
+        
+        scp -i ~/.ssh/id_rsa \
+          -o StrictHostKeyChecking=accept-new \
+          -o ConnectTimeout=10 \
+          dist/hello-world-app.zip \
+          "$LINUX_VM_USER@$LINUX_VM_HOST:/tmp/artifacts/" || {
+          echo "ERROR: Failed to copy artifact"
+          exit 1
+        }
+        
+        echo "✓ Artifact copied successfully"
+
+    - name: Run Ansible deployment playbook
+      run: |
+        echo "Running Ansible deployment playbook..."
+        
+        ansible-playbook \
+          -i /tmp/linux-inventory.yml \
+          ansible/linux-deployment-playbook.yml \
+          -v \
+          -e "artifact_source_dir=/tmp/artifacts" \
+          -e "deployment_env=${{ matrix.environment }}"
+
+    - name: Verify deployment
+      run: |
+        echo "Verifying deployment on Linux VM..."
+        
+        ssh -i ~/.ssh/id_rsa \
+          -o StrictHostKeyChecking=accept-new \
+          "$LINUX_VM_USER@$LINUX_VM_HOST" << 'VERIFY_SCRIPT'
+        
+        echo "========================================="
+        echo "Deployment Verification"
+        echo "========================================="
+        echo ""
+        
+        # Check if application directory exists
+        if [ -d "/opt/hello-world" ]; then
+          echo "✓ Application directory exists"
+          ls -la /opt/hello-world/ | head -20
+        else
+          echo "✗ Application directory not found"
+          exit 1
+        fi
+        
+        # Check if node process is running
+        if ps aux | grep -q "[n]ode app.js"; then
+          echo ""
+          echo "✓ Application process is running"
+          ps aux | grep "node app.js" | grep -v grep
+        else
+          echo ""
+          echo "✗ Application process not found"
+          exit 1
+        fi
+        
+        # Test health endpoint
+        echo ""
+        echo "Testing health endpoint..."
+        HEALTH_STATUS=$(curl -s http://localhost:3000/health)
+        if [ $? -eq 0 ]; then
+          echo "✓ Health endpoint is accessible"
+          echo "Response: $HEALTH_STATUS"
+        else
+          echo "✗ Health endpoint is not accessible"
+          exit 1
+        fi
+        
+        # Test main endpoint
+        echo ""
+        echo "Testing main endpoint..."
+        MAIN_STATUS=$(curl -s http://localhost:3000/)
+        if [ $? -eq 0 ]; then
+          echo "✓ Main endpoint is accessible"
+          echo "Response: $MAIN_STATUS"
+        else
+          echo "✗ Main endpoint is not accessible"
+          exit 1
+        fi
+        
+        echo ""
+        echo "========================================="
+        echo "✓ All verification checks passed"
+        echo "========================================="
+VERIFY_SCRIPT
+
+    - name: Deployment summary
+      if: success()
+      run: |
+        echo "========================================"
+        echo "LINUX VM DEPLOYMENT SUCCESSFUL"
+        echo "========================================"
+        echo ""
+        echo "Application Deployment Details:"
+        echo "  Host: $LINUX_VM_HOST"
+        echo "  User: $LINUX_VM_USER"
+        echo "  Directory: /opt/hello-world"
+        echo "  Port: 3000"
+        echo "  Environment: ${{ matrix.environment }}"
+        echo "  Version: ${{ needs.build-artifact.outputs.artifact-version }}"
+        echo ""
+        echo "Access Application:"
+        echo "  Main: http://$LINUX_VM_HOST:3000/"
+        echo "  Health: http://$LINUX_VM_HOST:3000/health"
+        echo ""
+        echo "View Logs:"
+        echo "  ssh $LINUX_VM_USER@$LINUX_VM_HOST"
+        echo "  tail -f /opt/hello-world/application.log"
+        echo ""
+        echo "Verify Process:"
+        echo "  ssh $LINUX_VM_USER@$LINUX_VM_HOST ps aux | grep node"
+        echo ""
+        echo "========================================"
+
+    - name: Deployment failed
+      if: failure()
+      run: |
+        echo "========================================"
+        echo "LINUX VM DEPLOYMENT FAILED"
+        echo "========================================"
+        echo ""
+        echo "Troubleshooting steps:"
+        echo "1. Verify Linux VM is accessible"
+        echo "2. Check SSH credentials"
+        echo "3. Ensure application directory has proper permissions"
+        echo "4. Check application logs on the VM"
+        echo "5. Verify Node.js and npm are installed on the VM"
+        echo ""
+        echo "Manual debugging:"
+        echo "  ssh $LINUX_VM_USER@$LINUX_VM_HOST"
+        echo "  tail -f /opt/hello-world/application.log"
+        echo ""
+        echo "========================================"
+
+    - name: Cleanup SSH key
+      if: always()
+      run: |
+        echo "Cleaning up SSH key..."
+        rm -f ~/.ssh/id_rsa
+        rm -f ~/.ssh/known_hosts

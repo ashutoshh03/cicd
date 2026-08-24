@@ -59,6 +59,16 @@ pipeline {
                     minikube version
 
                     echo ""
+                    echo "Starting Minikube if not already running..."
+                    
+                    if ! minikube status | grep -q "host: Running"; then
+                        echo "Minikube is not running, starting it..."
+                        minikube start --driver=docker || minikube start
+                    else
+                        echo "Minikube is already running"
+                    fi
+
+                    echo ""
                     echo "Kubernetes context:"
                     kubectl config current-context
 
@@ -248,51 +258,63 @@ pipeline {
                     set -eux
 
                     echo "========================================"
-                    echo "VERIFYING SELF-HEALING"
+                    echo "VERIFYING SELF-HEALING (Replica Management)"
                     echo "========================================"
 
                     echo ""
-                    echo "Pods before deletion:"
+                    echo "Initial pod count:"
+                    INITIAL_PODS=$(kubectl get pods -l app=${APP_NAME} --no-headers | wc -l)
+                    echo "Total pods: $INITIAL_PODS"
 
-                    kubectl get pods \
-                        -l app=${APP_NAME}
+                    kubectl get pods -l app=${APP_NAME} -o wide
+
+                    if [ "$INITIAL_PODS" -lt 2 ]; then
+                        echo "WARNING: Expected at least 2 replicas, but found $INITIAL_PODS"
+                    fi
 
                     echo ""
-                    echo "Selecting pod..."
+                    echo "Selecting a pod to delete..."
 
                     POD_NAME=$(kubectl get pods \
                         -l app=${APP_NAME} \
                         -o jsonpath="{.items[0].metadata.name}")
 
+                    echo "Pod selected for deletion: ${POD_NAME}"
+
+                    echo ""
+                    echo "Pod details before deletion:"
+                    kubectl describe pod ${POD_NAME} | grep -A 5 "Status:"
+
+                    echo ""
                     echo "Deleting pod: ${POD_NAME}"
 
-                    kubectl delete pod ${POD_NAME}
+                    kubectl delete pod ${POD_NAME} --grace-period=5
 
                     echo ""
-                    echo "Waiting for Kubernetes to recreate the pod..."
+                    echo "Waiting for Kubernetes to recreate pods (self-healing in action)..."
 
-                    sleep 10
-
-                    echo ""
-                    echo "Pods after deletion:"
-
-                    kubectl get pods \
-                        -l app=${APP_NAME} \
-                        -o wide
+                    sleep 15
 
                     echo ""
-                    echo "Waiting for deployment..."
+                    echo "Pod status after deletion (should show new pod):"
 
-                    kubectl rollout status \
-                        deployment/${APP_NAME} \
-                        --timeout=180s
+                    kubectl get pods -l app=${APP_NAME} -o wide
 
                     echo ""
-                    echo "Final pod status:"
+                    echo "Checking pod creation timestamp:"
+                    kubectl get pods -l app=${APP_NAME} -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.creationTimestamp}{"\n"}{end}'
 
-                    kubectl get pods \
-                        -l app=${APP_NAME} \
-                        -o wide
+                    echo ""
+                    echo "Waiting for all replicas to be ready..."
+
+                    kubectl rollout status deployment/${APP_NAME} --timeout=180s
+
+                    echo ""
+                    echo "Final deployment status:"
+                    kubectl get deployment ${APP_NAME} -o jsonpath='{.status.replicas} replicas, {.status.readyReplicas} ready'
+                    echo ""
+
+                    echo "✓ Self-healing verification completed successfully!"
                 '''
             }
         }

@@ -1,0 +1,23 @@
+# Ansible Inventory for Linux VM Deployment
+
+[linux_vms]
+linux_vm ansible_host="{{ lookup('env', 'LINUX_VM_HOST') }}" \
+         ansible_user="{{ lookup('env', 'LINUX_VM_USER') }}" \
+         ansible_ssh_private_key_file="{{ lookup('env', 'LINUX_VM_KEY_PATH') | default('~/.ssh/id_rsa') }}" \
+         ansible_python_interpreter=/usr/bin/python3 \
+         app_port=3000 \
+         app_directory=/opt/hello-world \
+         app_user=nodeapp
+
+[linux_vms:vars]
+# Common variables for all Linux VMs
+ansible_connection=ssh
+ansible_port=22
+deployment_env=production
+app_name=hello-world
+artifact_source_dir=/tmp/artifacts
+artifact_name=hello-world-app
+deployment_timeout=300
+service_restart_delay=5
+health_check_retries=10
+health_check_delay=3
