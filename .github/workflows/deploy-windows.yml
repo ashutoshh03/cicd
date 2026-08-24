@@ -15,6 +15,9 @@ on:
     types:
       - completed
 
+permissions:
+  contents: read
+
 jobs:
   deploy-windows-vm:
     runs-on: ubuntu-latest
@@ -24,174 +27,387 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
 
+    env:
+      WINDOWS_VM_HOST: ${{ secrets.WINDOWS_VM_HOST }}
+      WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
+
     steps:
+
+      # ========================================
+      # Checkout
+      # ========================================
+
       - name: Checkout source code
         uses: actions/checkout@v7
 
-      - name: Validate secrets
+
+      # ========================================
+      # Validate secrets
+      # ========================================
+
+      - name: Validate required secrets
         env:
-          WINDOWS_VM_HOST: ${{ secrets.WINDOWS_VM_HOST }}
-          WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
-          WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
           WINRM_CERT: ${{ secrets.WINRM_CERT }}
           WINRM_KEY: ${{ secrets.WINRM_KEY }}
+        shell: bash
         run: |
+          set -e
+
           echo "Validating required secrets..."
 
           if [ -z "$WINDOWS_VM_HOST" ]; then
-            echo "ERROR: WINDOWS_VM_HOST secret is not set"
+            echo "ERROR: WINDOWS_VM_HOST is not configured"
             exit 1
           fi
 
           if [ -z "$WINDOWS_USERNAME" ]; then
-            echo "ERROR: WINDOWS_USERNAME secret is not set"
-            exit 1
-          fi
-
-          if [ -z "$WINDOWS_PASSWORD" ]; then
-            echo "ERROR: WINDOWS_PASSWORD secret is not set"
+            echo "ERROR: WINDOWS_USERNAME is not configured"
             exit 1
           fi
 
           if [ -z "$WINRM_CERT" ]; then
-            echo "ERROR: WINRM_CERT secret is not set"
+            echo "ERROR: WINRM_CERT is not configured"
             exit 1
           fi
 
           if [ -z "$WINRM_KEY" ]; then
-            echo "ERROR: WINRM_KEY secret is not set"
+            echo "ERROR: WINRM_KEY is not configured"
             exit 1
           fi
 
-          echo "✓ All required secrets are configured"
+          echo "✓ Required secrets are configured"
 
-      - name: Install Ansible
+
+      # ========================================
+      # Install Ansible + WinRM
+      # ========================================
+
+      - name: Install Ansible and WinRM dependencies
+        shell: bash
         run: |
+          set -e
+
           echo "Installing Ansible and WinRM dependencies..."
 
           sudo apt-get update
-          sudo apt-get install -y ansible python3-pip
 
-          python3 -m pip install --user pywinrm "pywinrm[credssp]"
+          sudo apt-get install -y \
+            python3 \
+            python3-pip \
+            python3-venv \
+            netcat-openbsd
 
-          ansible-galaxy collection install ansible.windows
-          ansible-galaxy collection install community.windows
+          echo "Creating Python virtual environment..."
 
-          echo "✓ Ansible and dependencies installed"
+          python3 -m venv "$HOME/ansible-venv"
 
-      - name: Setup WinRM certificates
+          "$HOME/ansible-venv/bin/python" \
+            -m pip install --upgrade pip
+
+          "$HOME/ansible-venv/bin/python" \
+            -m pip install ansible pywinrm
+
+          echo "$HOME/ansible-venv/bin" >> "$GITHUB_PATH"
+
+          echo "Installing Windows Ansible collection..."
+
+          "$HOME/ansible-venv/bin/ansible-galaxy" \
+            collection install ansible.windows
+
+          echo ""
+          echo "Ansible version:"
+          "$HOME/ansible-venv/bin/ansible" --version
+
+          echo ""
+          echo "Testing pywinrm:"
+          "$HOME/ansible-venv/bin/python" \
+            -c "import winrm; print('✓ pywinrm installed successfully')"
+
+          echo ""
+          echo "✓ Ansible installation completed"
+
+
+      # ========================================
+      # Setup WinRM certificates
+      # ========================================
+
+      - name: Setup WinRM client certificates
         env:
           WINRM_CERT: ${{ secrets.WINRM_CERT }}
           WINRM_KEY: ${{ secrets.WINRM_KEY }}
+        shell: bash
         run: |
-          echo "Setting up WinRM certificates..."
+          set -e
+
+          echo "Setting up WinRM client certificates..."
 
           mkdir -p "$HOME/.winrm"
           chmod 700 "$HOME/.winrm"
 
-          printf '%s\n' "$WINRM_CERT" > "$HOME/.winrm/client.pem"
-          printf '%s\n' "$WINRM_KEY" > "$HOME/.winrm/client-key.pem"
+          printf '%s\n' "$WINRM_CERT" \
+            > "$HOME/.winrm/client.pem"
+
+          printf '%s\n' "$WINRM_KEY" \
+            > "$HOME/.winrm/client-key.pem"
 
           chmod 600 "$HOME/.winrm/client.pem"
           chmod 600 "$HOME/.winrm/client-key.pem"
 
+          echo "Checking certificate file..."
+
+          if [ ! -s "$HOME/.winrm/client.pem" ]; then
+            echo "ERROR: client.pem is empty"
+            exit 1
+          fi
+
+          if [ ! -s "$HOME/.winrm/client-key.pem" ]; then
+            echo "ERROR: client-key.pem is empty"
+            exit 1
+          fi
+
           echo "✓ WinRM certificates configured"
 
-      - name: Create Ansible inventory
+
+      # ========================================
+      # Test network connectivity
+      # ========================================
+
+      - name: Test WinRM port 5986
+        shell: bash
         run: |
-          echo "Creating dynamic Ansible inventory..."
+          set -e
+
+          echo "Testing connectivity to Windows VM..."
+
+          echo "Target: $WINDOWS_VM_HOST"
+          echo "Port: 5986"
+
+          nc -vz \
+            -w 10 \
+            "$WINDOWS_VM_HOST" \
+            5986
+
+          echo "✓ Port 5986 is reachable"
+
+
+      # ========================================
+      # Create Ansible inventory
+      # ========================================
+
+      - name: Create Ansible inventory
+        shell: bash
+        run: |
+          set -e
+
+          echo "Creating Ansible inventory..."
 
           cat > /tmp/windows-inventory.yml <<EOF
           all:
             hosts:
               windows_vm:
-                ansible_host: "${{ secrets.WINDOWS_VM_HOST }}"
-                ansible_port: 5986
+                ansible_host: "${WINDOWS_VM_HOST}"
+                ansible_user: "${WINDOWS_USERNAME}"
+
                 ansible_connection: winrm
+                ansible_port: 5986
+
                 ansible_winrm_transport: certificate
                 ansible_winrm_server_cert_validation: ignore
-                ansible_winrm_cert_pem: "$HOME/.winrm/client.pem"
-                ansible_winrm_cert_key_pem: "$HOME/.winrm/client-key.pem"
-                ansible_user: "${{ secrets.WINDOWS_USERNAME }}"
+
+                ansible_winrm_cert_pem: "${HOME}/.winrm/client.pem"
+                ansible_winrm_cert_key_pem: "${HOME}/.winrm/client-key.pem"
           EOF
 
-          echo "Inventory created:"
+          echo "Inventory created successfully."
+
+          echo "Inventory configuration:"
           cat /tmp/windows-inventory.yml
 
-          echo "✓ Ansible inventory generated"
 
-      - name: Verify Ansible connectivity
+      # ========================================
+      # Verify Ansible
+      # ========================================
+
+      - name: Verify Ansible WinRM connectivity
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
+        shell: bash
         run: |
-          echo "Testing Ansible connectivity to Windows VM..."
+          set -e
+
+          echo "========================================"
+          echo "Testing Ansible → Windows VM"
+          echo "========================================"
 
           ansible \
             -i /tmp/windows-inventory.yml \
             windows_vm \
-            -m ansible.windows.win_ping
+            -m ansible.windows.win_ping \
+            -vv
+
+          echo ""
+          echo "✓ Ansible WinRM connectivity successful"
+
+
+      # ========================================
+      # Check Windows Node.js
+      # ========================================
+
+      - name: Check Node.js on Windows VM
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking Node.js installation..."
+
+          ansible \
+            -i /tmp/windows-inventory.yml \
+            windows_vm \
+            -m ansible.windows.win_command \
+            -a "node --version"
+
+          echo "✓ Node.js check completed"
+
+
+      # ========================================
+      # Run deployment
+      # ========================================
 
       - name: Run Ansible deployment playbook
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
-          ANSIBLE_INVENTORY: /tmp/windows-inventory.yml
+        shell: bash
         run: |
-          echo "Executing Ansible deployment playbook..."
+          set -e
+
+          echo "========================================"
+          echo "Starting Windows VM deployment"
+          echo "========================================"
 
           ansible-playbook \
             -i /tmp/windows-inventory.yml \
             ansible/playbook.yml \
-            -v
+            -vv
 
-      - name: Verify deployment
+          echo ""
+          echo "✓ Ansible deployment completed successfully"
+
+
+      # ========================================
+      # Verify application
+      # ========================================
+
+      - name: Verify application process
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
+        shell: bash
         run: |
-          echo "Verifying deployment on Windows VM..."
+          set -e
+
+          echo "Checking Node.js process..."
 
           ansible \
             -i /tmp/windows-inventory.yml \
             windows_vm \
             -m ansible.windows.win_shell \
-            -a 'Get-Process node -ErrorAction SilentlyContinue'
+            -a 'Get-Process node -ErrorAction SilentlyContinue | Select-Object Id,ProcessName'
 
-          echo "✓ Deployment verification complete"
+          echo "✓ Process verification completed"
 
-      - name: Cleanup certificates
+
+      # ========================================
+      # Verify application port
+      # ========================================
+
+      - name: Verify application port 3000
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking application port 3000..."
+
+          ansible \
+            -i /tmp/windows-inventory.yml \
+            windows_vm \
+            -m ansible.windows.win_shell \
+            -a 'Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue'
+
+          echo "✓ Port verification completed"
+
+
+      # ========================================
+      # Deployment summary
+      # ========================================
+
+      - name: Deployment summary
+        if: success()
+        shell: bash
+        run: |
+          echo ""
+          echo "========================================"
+          echo " WINDOWS VM DEPLOYMENT SUCCESSFUL"
+          echo "========================================"
+          echo ""
+          echo "Host:        $WINDOWS_VM_HOST"
+          echo "User:        $WINDOWS_USERNAME"
+          echo "WinRM Port:  5986"
+          echo "App Port:    3000"
+          echo "Directory:   C:\\apps\\hello-world"
+          echo ""
+          echo "Application:"
+          echo "http://$WINDOWS_VM_HOST:3000/"
+          echo ""
+          echo "Health:"
+          echo "http://$WINDOWS_VM_HOST:3000/health"
+          echo ""
+          echo "Deployment method:"
+          echo "Ansible + WinRM HTTPS + Certificate Authentication"
+          echo ""
+          echo "========================================"
+
+
+      # ========================================
+      # Deployment failure
+      # ========================================
+
+      - name: Deployment failed
+        if: failure()
+        shell: bash
+        run: |
+          echo ""
+          echo "========================================"
+          echo " WINDOWS VM DEPLOYMENT FAILED"
+          echo "========================================"
+          echo ""
+          echo "Troubleshooting:"
+          echo ""
+          echo "1. Verify WINDOWS_VM_HOST"
+          echo "2. Verify WINDOWS_USERNAME"
+          echo "3. Verify WinRM HTTPS is listening on port 5986"
+          echo "4. Verify Windows Firewall allows TCP 5986"
+          echo "5. Verify WINRM_CERT is client.pem"
+          echo "6. Verify WINRM_KEY is client-key.pem"
+          echo "7. Verify certificate authentication is enabled"
+          echo "8. Verify certificate-to-user mapping"
+          echo "9. Check that port 5986 is reachable from GitHub Actions"
+          echo ""
+          echo "========================================"
+
+
+      # ========================================
+      # Cleanup
+      # ========================================
+
+      - name: Cleanup WinRM certificates
         if: always()
+        shell: bash
         run: |
           echo "Cleaning up WinRM certificates..."
 
           rm -rf "$HOME/.winrm"
 
           echo "✓ Certificates removed"
-
-      - name: Deployment summary
-        if: success()
-        run: |
-          echo "========================================"
-          echo "WINDOWS VM DEPLOYMENT SUCCESSFUL"
-          echo "========================================"
-          echo ""
-          echo "Application deployed to Windows VM via WinRM"
-          echo "Deployment method: Ansible with certificate authentication"
-          echo "Date: $(date)"
-          echo ""
-          echo "Next steps:"
-          echo "1. Verify application status on the Windows VM"
-          echo "2. Check application logs in C:\\apps\\hello-world\\"
-          echo "3. Verify application is running on port 3000"
-
-      - name: Deployment failed
-        if: failure()
-        run: |
-          echo "========================================"
-          echo "WINDOWS VM DEPLOYMENT FAILED"
-          echo "========================================"
-          echo ""
-          echo "Troubleshooting steps:"
-          echo "1. Verify WINDOWS_VM_HOST is correct"
-          echo "2. Ensure WinRM is enabled on the Windows VM"
-          echo "3. Check that certificates are properly configured"
-          echo "4. Verify network connectivity to Windows VM"
-          echo "5. Check Ansible logs for detailed errors"
