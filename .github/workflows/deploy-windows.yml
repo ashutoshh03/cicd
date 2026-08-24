@@ -1,366 +1,54 @@
-name: Deploy to Windows via Ansible
+name: Deploy to Windows
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
       - test
       - master
 
-  workflow_run:
-    workflows:
-      - "CI/CD Pipeline - Build, Test, and Deploy to Kubernetes"
-    types:
-      - completed
-
-permissions:
-  contents: read
-
 jobs:
-
   deploy-windows:
-    name: Deploy to Windows PC
     runs-on: self-hosted
 
-    if: >
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-
-    env:
-      WINDOWS_VM_HOST: ${{ secrets.WINDOWS_VM_HOST }}
-      WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
-      WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
-
     steps:
-
-      # ============================================
-      # CHECKOUT
-      # ============================================
-
       - name: Checkout source code
         uses: actions/checkout@v7
 
-
-      # ============================================
-      # VALIDATE SECRETS
-      # ============================================
-
-      - name: Validate required secrets
-        shell: bash
+      - name: Check Node.js
+        shell: powershell
         run: |
-          set -e
+          node --version
+          npm --version
 
-          echo "========================================"
-          echo "Validating configuration"
-          echo "========================================"
-
-          if [ -z "$WINDOWS_VM_HOST" ]; then
-            echo "ERROR: WINDOWS_VM_HOST is missing"
-            exit 1
-          fi
-
-          if [ -z "$WINDOWS_USERNAME" ]; then
-            echo "ERROR: WINDOWS_USERNAME is missing"
-            exit 1
-          fi
-
-          if [ -z "$WINDOWS_PASSWORD" ]; then
-            echo "ERROR: WINDOWS_PASSWORD is missing"
-            exit 1
-          fi
-
-          echo "Host: $WINDOWS_VM_HOST"
-          echo "User: $WINDOWS_USERNAME"
-
-          echo "✓ Required secrets are configured"
-
-
-      # ============================================
-      # INSTALL ANSIBLE
-      # ============================================
-
-      - name: Install Ansible
-        shell: bash
+      - name: Install dependencies
+        shell: powershell
         run: |
-          set -e
+          npm ci
 
-          echo "========================================"
-          echo "Installing Ansible"
-          echo "========================================"
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            python3 \
-            python3-pip \
-            python3-venv \
-            netcat-openbsd
-
-          python3 -m venv "$HOME/ansible-venv"
-
-          "$HOME/ansible-venv/bin/python" \
-            -m pip install --upgrade pip
-
-          "$HOME/ansible-venv/bin/pip" \
-            install ansible pywinrm requests requests-credssp
-
-          "$HOME/ansible-venv/bin/ansible-galaxy" \
-            collection install ansible.windows
-
-          echo "$HOME/ansible-venv/bin" >> "$GITHUB_PATH"
-
-          echo ""
-          echo "Ansible:"
-          "$HOME/ansible-venv/bin/ansible --version"
-
-          echo ""
-          echo "pywinrm:"
-          "$HOME/ansible-venv/bin/python" \
-            -c "import winrm; print('pywinrm OK')"
-
-          echo "✓ Ansible installation completed"
-
-
-      # ============================================
-      # TEST NETWORK
-      # ============================================
-
-      - name: Test WinRM connectivity
-        shell: bash
+      - name: Build application
+        shell: powershell
         run: |
-          set -e
+          npm run build
 
-          echo "========================================"
-          echo "Testing WinRM TCP connectivity"
-          echo "========================================"
-
-          echo "Host: $WINDOWS_VM_HOST"
-          echo "Port: 5986"
-
-          nc -vz -w 10 \
-            "$WINDOWS_VM_HOST" \
-            5986
-
-          echo "✓ TCP 5986 reachable"
-
-
-      # ============================================
-      # CREATE INVENTORY
-      # ============================================
-
-      - name: Create Ansible inventory
-        shell: bash
+      - name: Deploy application
+        shell: powershell
         run: |
-          set -e
+          if (!(Test-Path "C:\apps\hello-world")) {
+              New-Item -ItemType Directory -Path "C:\apps\hello-world" -Force
+          }
 
-          cat > "$HOME/windows-inventory.yml" <<EOF
-          all:
-            hosts:
-              windows_vm:
-                ansible_host: "${WINDOWS_VM_HOST}"
-                ansible_port: 5986
+          # Your deployment commands here
 
-                ansible_connection: winrm
-
-                ansible_winrm_scheme: https
-                ansible_winrm_transport: basic
-                ansible_winrm_server_cert_validation: ignore
-
-                ansible_user: "${WINDOWS_USERNAME}"
-                ansible_password: "${WINDOWS_PASSWORD}"
-          EOF
-
-          echo "✓ Ansible inventory created"
-
-          echo ""
-          echo "Inventory:"
-          sed 's/ansible_password:.*/ansible_password: "***"/' \
-            "$HOME/windows-inventory.yml"
-
-
-      # ============================================
-      # TEST ANSIBLE
-      # ============================================
-
-      - name: Test Ansible WinRM
-        shell: bash
+      - name: Verify application
+        shell: powershell
         run: |
-          set -e
-
-          echo "========================================"
-          echo "Testing Ansible → Windows"
-          echo "========================================"
-
-          ansible \
-            -i "$HOME/windows-inventory.yml" \
-            windows_vm \
-            -m ansible.windows.win_ping \
-            -vv
-
-          echo ""
-          echo "✓ Ansible WinRM connectivity successful"
-
-
-      # ============================================
-      # CHECK WINDOWS
-      # ============================================
-
-      - name: Check Windows environment
-        shell: bash
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "Checking Windows environment"
-          echo "========================================"
-
-          ansible \
-            -i "$HOME/windows-inventory.yml" \
-            windows_vm \
-            -m ansible.windows.win_command \
-            -a "hostname"
-
-          echo ""
-
-          ansible \
-            -i "$HOME/windows-inventory.yml" \
-            windows_vm \
-            -m ansible.windows.win_command \
-            -a "node --version"
-
-          echo "✓ Windows environment verified"
-
-
-      # ============================================
-      # DEPLOY
-      # ============================================
-
-      - name: Run Ansible deployment
-        shell: bash
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "Starting deployment"
-          echo "========================================"
-
-          ansible-playbook \
-            -i "$HOME/windows-inventory.yml" \
-            ansible/playbook.yml \
-            -vv
-
-          echo ""
-          echo "✓ Deployment completed"
-
-
-      # ============================================
-      # VERIFY NODE PROCESS
-      # ============================================
-
-      - name: Verify Node.js process
-        shell: bash
-        run: |
-          set -e
-
-          echo "Checking Node.js process..."
-
-          ansible \
-            -i "$HOME/windows-inventory.yml" \
-            windows_vm \
-            -m ansible.windows.win_shell \
-            -a 'Get-Process node -ErrorAction SilentlyContinue | Select-Object Id,ProcessName'
-
-          echo "✓ Node.js process check completed"
-
-
-      # ============================================
-      # VERIFY PORT
-      # ============================================
-
-      - name: Verify application port
-        shell: bash
-        run: |
-          set -e
-
-          echo "Checking port 3000..."
-
-          ansible \
-            -i "$HOME/windows-inventory.yml" \
-            windows_vm \
-            -m ansible.windows.win_shell \
-            -a 'Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue'
-
-          echo "✓ Port 3000 verification completed"
-
-
-      # ============================================
-      # SUCCESS
-      # ============================================
+          Get-Process node -ErrorAction SilentlyContinue
 
       - name: Deployment successful
-        if: success()
-        shell: bash
+        shell: powershell
         run: |
-          echo ""
-          echo "========================================"
-          echo " WINDOWS DEPLOYMENT SUCCESSFUL"
-          echo "========================================"
-          echo ""
-          echo "Host:      $WINDOWS_VM_HOST"
-          echo "User:      $WINDOWS_USERNAME"
-          echo "WinRM:     HTTPS 5986"
-          echo "App port:  3000"
-          echo ""
-          echo "Application:"
-          echo "http://$WINDOWS_VM_HOST:3000/"
-          echo ""
-          echo "Health:"
-          echo "http://$WINDOWS_VM_HOST:3000/health"
-          echo ""
-          echo "Deployment:"
-          echo "Ansible + WinRM HTTPS"
-          echo ""
-          echo "========================================"
-
-
-      # ============================================
-      # FAILURE
-      # ============================================
-
-      - name: Deployment failed
-        if: failure()
-        shell: bash
-        run: |
-          echo ""
-          echo "========================================"
-          echo " WINDOWS DEPLOYMENT FAILED"
-          echo "========================================"
-          echo ""
-          echo "Check:"
-          echo ""
-          echo "1. Windows machine is powered on"
-          echo "2. WinRM service is running"
-          echo "3. TCP 5986 is reachable"
-          echo "4. WINDOWS_VM_HOST is correct"
-          echo "5. WINDOWS_USERNAME is correct"
-          echo "6. WINDOWS_PASSWORD is correct"
-          echo "7. WinRM Basic authentication is enabled"
-          echo "8. ansible/playbook.yml is valid"
-          echo ""
-          echo "========================================"
-
-
-      # ============================================
-      # CLEANUP
-      # ============================================
-
-      - name: Cleanup
-        if: always()
-        shell: bash
-        run: |
-          rm -f "$HOME/windows-inventory.yml"
-
-          echo "✓ Temporary inventory removed"
+          Write-Host "========================================"
+          Write-Host " WINDOWS DEPLOYMENT SUCCESSFUL"
+          Write-Host "========================================"
