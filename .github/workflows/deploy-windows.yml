@@ -16,6 +16,9 @@ jobs:
   deploy-windows:
     runs-on: self-hosted
 
+    env:
+      PORT: 3000
+
     steps:
 
       # ========================================
@@ -33,7 +36,7 @@ jobs:
       - name: Check Node.js
         shell: powershell
         run: |
-          $node = node --version 2>&1
+          $node = node --version
 
           if ($LASTEXITCODE -ne 0) {
               Write-Error "Node.js is not installed on this Windows runner."
@@ -41,6 +44,7 @@ jobs:
           }
 
           Write-Host "Node.js version: $node"
+          Write-Host "PORT: $env:PORT"
 
 
       # ========================================
@@ -86,7 +90,7 @@ jobs:
 
 
       # ========================================
-      # Verify package.json
+      # Verify application files
       # ========================================
 
       - name: Verify application files
@@ -145,7 +149,7 @@ jobs:
               Write-Host "Existing Node.js processes stopped."
           }
           else {
-              Write-Host "No existing Node.js process found."
+              Write-Host "No existing Node.js process found. Continuing..."
           }
 
 
@@ -185,6 +189,7 @@ jobs:
 
           Write-Host "Application started."
           Write-Host "PID: $($process.Id)"
+          Write-Host "PORT: $env:PORT"
 
 
       # ========================================
@@ -196,9 +201,10 @@ jobs:
         run: |
           $maxRetries = 10
           $retryDelay = 3
-          $healthUrl = "http://localhost:3000/health"
+          $healthUrl = "http://localhost:$env:PORT/health"
 
           Write-Host "Waiting for application to become healthy..."
+          Write-Host "Health URL: $healthUrl"
 
           for ($i = 1; $i -le $maxRetries; $i++) {
 
@@ -277,20 +283,20 @@ jobs:
       # Verify port
       # ========================================
 
-      - name: Verify port 3000
+      - name: Verify application port
         shell: powershell
         run: |
           $connection = Get-NetTCPConnection `
-            -LocalPort 3000 `
+            -LocalPort $env:PORT `
             -State Listen `
             -ErrorAction SilentlyContinue
 
           if (!$connection) {
-              Write-Error "Nothing is listening on port 3000."
+              Write-Error "Nothing is listening on port $env:PORT."
               exit 1
           }
 
-          Write-Host "Port 3000 is listening."
+          Write-Host "Port $env:PORT is listening."
 
 
       # ========================================
@@ -308,13 +314,13 @@ jobs:
           Write-Host ""
           Write-Host "Application: hello-world"
           Write-Host "Directory:   C:\apps\hello-world"
-          Write-Host "Port:        3000"
+          Write-Host "Port:        $env:PORT"
           Write-Host ""
           Write-Host "Application:"
-          Write-Host "http://localhost:3000/"
+          Write-Host "http://localhost:$env:PORT/"
           Write-Host ""
           Write-Host "Health:"
-          Write-Host "http://localhost:3000/health"
+          Write-Host "http://localhost:$env:PORT/health"
           Write-Host ""
           Write-Host "Log:"
           Write-Host "C:\apps\hello-world\app.log"
@@ -343,6 +349,10 @@ jobs:
           node --version
 
           Write-Host ""
+          Write-Host "PORT:"
+          Write-Host $env:PORT
+
+          Write-Host ""
           Write-Host "Application directory:"
           Get-ChildItem "C:\apps\hello-world" `
             -ErrorAction SilentlyContinue
@@ -353,9 +363,9 @@ jobs:
             -ErrorAction SilentlyContinue
 
           Write-Host ""
-          Write-Host "Port 3000:"
+          Write-Host "Port $env:PORT:"
           Get-NetTCPConnection `
-            -LocalPort 3000 `
+            -LocalPort $env:PORT `
             -ErrorAction SilentlyContinue
 
           Write-Host ""
