@@ -17,7 +17,7 @@ on:
 jobs:
   deploy-windows-vm:
 
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     # For workflow_run, deploy only when the previous workflow succeeded.
     # For push/manual runs, always allow deployment.
