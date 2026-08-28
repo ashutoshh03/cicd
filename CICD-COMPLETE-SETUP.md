@@ -37,21 +37,15 @@ This project contains a comprehensive CI/CD infrastructure implementing all task
           │                  │                       │
           └──────────────────┼───────────────────────┘
                              │
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-    ┌─────▼──────────┐ ┌────▼──────────┐ ┌────▼──────────┐
-    │ GitHub Actions │ │ GitHub        │ │ GitHub        │
-    │ deploy-windows │ │ Actions       │ │ Actions       │
-    │ .yml           │ │ deploy-linux  │ │ (future)      │
-    │                │ │ .yml          │ │               │
-    └─────┬──────────┘ └────┬──────────┘ └────┬──────────┘
-          │                 │                 │
-    ┌─────▼─────┐     ┌────▼──────┐     ┌────▼──────┐
-    │ Ansible   │     │ Ansible   │     │ Helm      │
-    │ (WinRM)   │     │ (SSH)     │     │ Charts    │
-    │ Windows   │     │ Linux     │     │ K8s       │
-    │ VM        │     │ VM        │     │           │
-    └───────────┘     └───────────┘     └───────────┘
+                    ┌────────▼─────────┐
+                    │ Kubernetes       │
+                    │ Minikube         │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼─────────┐
+                    │ Windows VM       │
+                    │ Ansible + WinRM  │
+                    └──────────────────┘
 ```
 
 ## 📁 Project Structure
@@ -62,12 +56,8 @@ cicd/
 │   └── workflows/
 │       ├── ci-cd.yml                    # Task 1: GitHub Actions pipeline
 │       ├── deploy-windows.yml           # Task 3: Windows VM deployment
-│       └── deploy-linux.yml             # Phase 2.2: Linux VM deployment
-├── ansible/
 │   ├── inventory.yml                    # Windows VM inventory
-│   ├── playbook.yml                     # Windows deployment playbook
-│   ├── linux-inventory.yml              # Phase 2.2: Linux VM inventory
-│   └── linux-deployment-playbook.yml    # Phase 2.2: Linux deployment
+│   └── playbook.yml                     # Windows deployment playbook
 ├── helm/
 │   ├── hello-world-chart/               # Phase 2.1: Helm chart
 │   │   ├── Chart.yaml
@@ -101,12 +91,12 @@ cicd/
 **File:** [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml)
 
 **Features:**
-- Automatic builds on push to main/master branches
-- Node.js dependency installation and caching
+- Manual, push, and pull-request triggers for main/master
+- Node.js 22 setup and dependency installation
 - Automated testing with npm test
 - Application artifact creation (ZIP format)
-- Docker image building with versioning
-- Artifact upload for retention
+- Docker image building and upload as a workflow artifact
+- Image tagging with the commit SHA
 - Minikube Kubernetes deployment
 - Automatic rollout verification
 - Health check verification
@@ -117,7 +107,7 @@ cicd/
 2. **Build Docker** - Creates Docker image with versioning
 3. **Deploy Kubernetes** - Deploys to Minikube with 2 replicas
 
-**Secrets Required:** None (uses local resources)
+**Secrets Required:** None (the workflow uses GitHub-hosted resources)
 
 ---
 
@@ -191,7 +181,6 @@ cicd/
 **Secrets Required:**
 - `WINDOWS_VM_HOST` - IP/hostname of Windows VM
 - `WINDOWS_USERNAME` - Windows VM username
-- `WINDOWS_PASSWORD` - Windows VM password
 - `WINRM_CERT` - WinRM client certificate (PEM)
 - `WINRM_KEY` - WinRM client private key (PEM)
 
@@ -272,70 +261,9 @@ helm install hello-world ./helm/hello-world-chart \
 
 ---
 
-### Phase 2.2: Ansible Artifact Deployment to Linux VM ✅
+### Phase 2.2: Linux VM Deployment
 
-**Flow:** GitHub Actions → Ansible → SSH → Linux VM → Deployment
-
-**Files:**
-- **Workflow:** [.github/workflows/deploy-linux.yml](.github/workflows/deploy-linux.yml)
-- **Playbook:** [ansible/linux-deployment-playbook.yml](ansible/linux-deployment-playbook.yml)
-- **Inventory:** [ansible/linux-inventory.yml](ansible/linux-inventory.yml)
-
-**Features:**
-- Automated artifact build and transfer
-- SSH-based secure connection
-- Idempotent deployment
-- Backup management (keep last 5 backups)
-- Process management
-- Health check verification
-- Comprehensive logging
-- Error recovery
-- Post-deployment verification
-- Automatic cleanup
-
-**Deployment Steps:**
-1. Build Node.js application artifact
-2. Create ZIP archive
-3. Transfer artifact via SCP to Linux VM
-4. Extract artifact
-5. Install npm dependencies
-6. Stop existing application
-7. Start new application
-8. Verify health endpoints
-9. Monitor logs
-10. Provide deployment summary
-
-**Linux Playbook Features:**
-- Pre-deployment verification (Node.js, npm)
-- Backup creation with timestamp
-- Process health checks
-- Port availability verification
-- Health endpoint testing (10 retries with 3-second delay)
-- Main endpoint testing
-- Application logs monitoring
-- Error handling and rollback capability
-
-**Secrets Required:**
-- `LINUX_VM_HOST` - IP/hostname of Linux VM
-- `LINUX_VM_USER` - SSH user for Linux VM
-- `LINUX_VM_SSH_KEY` - SSH private key (PEM format)
-
-**Setup Instructions:**
-1. Generate SSH key pair:
-   ```bash
-   ssh-keygen -t rsa -f ~/.ssh/id_rsa -N ""
-   ```
-2. Copy public key to Linux VM:
-   ```bash
-   ssh-copy-id -i ~/.ssh/id_rsa.pub user@vm-host
-   ```
-3. Add GitHub secrets with SSH credentials
-4. Ensure Node.js and npm are installed on Linux VM
-
-**Supported Environments:**
-- Development (dev)
-- QA (qa)
-- Production (prod)
+Linux VM deployment is not part of the current repository. The active remote VM deployment target is Windows via Ansible and WinRM.
 
 ---
 
@@ -363,12 +291,6 @@ helm install hello-world ./helm/hello-world-chart \
 - OpenSSL for certificate generation
 - Network connectivity from CI/CD server
 
-**For Linux VM (Phase 2.2):**
-- Ubuntu 18.04+ or similar
-- Node.js 20+ and npm 10+ installed
-- SSH server running
-- Network connectivity from CI/CD server
-
 ### GitHub Secrets Configuration
 
 #### Task 3 - Windows Deployment
@@ -378,17 +300,8 @@ helm install hello-world ./helm/hello-world-chart \
 # Then add to GitHub Secrets:
 WINDOWS_VM_HOST=<Windows VM IP or hostname>
 WINDOWS_USERNAME=<Windows username>
-WINDOWS_PASSWORD=<Windows password>
 WINRM_CERT=<contents of client.pem>
 WINRM_KEY=<contents of client-key.pem>
-```
-
-#### Phase 2.2 - Linux Deployment
-
-```bash
-LINUX_VM_HOST=<Linux VM IP or hostname>
-LINUX_VM_USER=<SSH user>
-LINUX_VM_SSH_KEY=<contents of private key (PEM format)>
 ```
 
 ### Application Configuration
@@ -398,9 +311,6 @@ LINUX_VM_SSH_KEY=<contents of private key (PEM format)>
 | Variable | Default | Description |
 |----------|---------|-------------|
 | PORT | 3000 | Application port |
-| NODE_ENV | development | Node.js environment |
-| LOG_LEVEL | info | Logging level |
-| APP_NAME | hello-world | Application name |
 
 ---
 
@@ -469,30 +379,6 @@ helm upgrade hello-world ./helm/hello-world-chart \
 
 # Uninstall
 helm uninstall hello-world -n dev
-```
-
-### Phase 2.2: Linux VM Deployment
-
-```bash
-# 1. Ensure GitHub secrets are configured
-# 2. Commit and push to main branch
-# 3. GitHub Actions workflow will automatically:
-#    - Build artifact
-#    - Deploy to Linux VM
-#    - Run verification tests
-
-# Manual trigger:
-# - Go to GitHub Actions tab
-# - Select "Deploy Artifact to Linux VM" workflow
-# - Click "Run workflow"
-# - Choose environment (dev/qa/prod)
-# - Workflow will build, transfer, and deploy
-
-# Check deployment on Linux VM
-ssh user@linux-vm-host
-cd /opt/hello-world
-tail -f application.log
-curl http://localhost:3000/health
 ```
 
 ---
@@ -568,27 +454,6 @@ Get-Content C:\apps\hello-world\app.log
 Invoke-WebRequest http://localhost:3000/health
 ```
 
-### Linux VM
-
-```bash
-# Check application status
-ps aux | grep node
-
-# View logs
-tail -f /opt/hello-world/application.log
-
-# Test endpoints
-curl http://localhost:3000/
-curl http://localhost:3000/health
-
-# Check process details
-lsof -i :3000
-netstat -tlnp | grep 3000
-
-# Monitor resource usage
-top -p $(pgrep -f 'node app.js')
-```
-
 ### Helm Chart
 
 ```bash
@@ -630,13 +495,6 @@ kubectl logs -f -l app=hello-world -n dev
 - ✅ Restrict WinRM to specific hosts
 - ✅ Use HTTPS for WinRM (port 5986)
 - ✅ Keep Windows updates current
-
-### Linux VM Security
-
-- ✅ Use SSH key-based authentication
-- ✅ Disable password authentication
-- ✅ Use SSH key passphrase protection
-- ✅ Restrict SSH access via firewall
 
 ### Kubernetes Security
 
@@ -727,12 +585,11 @@ kubectl rollout undo deployment/hello-world -n prod
 ## ✅ Checklist for Complete Setup
 
 - [ ] GitHub repository created and configured
-- [ ] GitHub Secrets added (Windows and Linux credentials)
+- [ ] GitHub Secrets added (Windows credentials, if using Task 3)
 - [ ] Local environment setup (Docker, kubectl, Minikube)
 - [ ] Jenkins instance configured (if using Task 2)
 - [ ] Windows VM configured with WinRM and certificates (Task 3)
-- [ ] Linux VM configured with SSH and Node.js (Phase 2.2)
-- [ ] Test GitHub Actions workflows (Task 1 and Phase 2.2)
+- [ ] Test the GitHub Actions workflows (Task 1 and Task 3, if enabled)
 - [ ] Test Jenkins pipeline (Task 2)
 - [ ] Test Windows deployment (Task 3)
 - [ ] Test Helm deployment (Phase 2.1)
@@ -749,8 +606,7 @@ kubectl rollout undo deployment/hello-world -n prod
   - Task 2: Jenkins Pipeline
   - Task 3: Windows VM Deployment
   - Phase 2.1: Helm Charts
-  - Phase 2.2: Linux Artifact Deployment
 
 ---
 
-This CI/CD infrastructure provides production-ready automation for building, testing, and deploying applications across Kubernetes, Windows VMs, and Linux VMs with enterprise-grade features and security considerations.
+This CI/CD infrastructure automates building, testing, and deploying the application to Kubernetes and, optionally, a Windows VM.

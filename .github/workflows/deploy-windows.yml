@@ -244,7 +244,7 @@ jobs:
 
           echo "Verifying deployment on Windows VM..."
 
-          ansible \
+          ansible 
             -i /tmp/windows-inventory.yml \
             windows_vm \
             -m ansible.windows.win_command \
