@@ -44,7 +44,7 @@ jobs:
         languages: javascript-typescript
 
     - name: Run Trivy filesystem scan
-      uses: aquasecurity/trivy-action@v2.336.0
+      uses: aquasecurity/trivy-action@v4
       with:
         scan-type: 'fs'
         format: 'table'
