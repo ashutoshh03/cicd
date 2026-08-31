@@ -33,6 +33,27 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
+    - name: Validate SonarQube secrets
+      shell: bash
+      run: |
+        set -e
+        if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+          echo "ERROR: SONAR_TOKEN secret is missing. Add it in GitHub repo settings."
+          exit 1
+        fi
+
+        if [ -z "${{ secrets.SONAR_HOST_URL }}" ]; then
+          echo "ERROR: SONAR_HOST_URL secret is missing. For SonarQube use https://your-server:9000 . For SonarCloud use https://sonarcloud.io ."
+          exit 1
+        fi
+
+        if ! echo "${{ secrets.SONAR_HOST_URL }}" | grep -Eq '^https?://'; then
+          echo "ERROR: SONAR_HOST_URL must start with http:// or https://"
+          exit 1
+        fi
+
+        echo "SonarQube configuration looks valid."
+
     - name: SonarQube scan
       uses: SonarSource/sonarqube-scan-action@v5
       env:
